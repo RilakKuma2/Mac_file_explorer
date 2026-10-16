@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+		<string>ko</string>
+		<string>ja</string>
+		<string>fr</string>
+		<string>de</string>
+		<string>es</string>
+		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+	</array>
+    <key>CFBundleDisplayName</key>
+    <string>Mac Explorer</string>
+    <key>CFBundleExecutable</key>
+    <string>Mac Explorer</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.macexplorer.filemanager</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Mac Explorer</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Folder</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>4</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/RilakKuma2/Mac_file_explorer/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>/MKOb7lEm+Io++e+1WSSYuz0Fp9c1APGoKih+5/zvLM=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUSendProfileInfo</key>
+    <false/>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+	<key>NSAppDataUsageDescription</key>
+	<string>Mac Explorer needs access to other application data so it can browse and manage all locations you open.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Mac Explorer uses Finder automation only when you ask it to open Finder's Network browser.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Mac Explorer needs access to show and manage files on your Desktop.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Mac Explorer needs access to show and manage files in your Documents folder.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Mac Explorer needs access to show and manage downloaded files.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Mac Explorer needs access to browse file servers and network volumes you connect.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Mac Explorer needs access to browse and manage files on removable drives.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
