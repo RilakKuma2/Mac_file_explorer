@@ -176,7 +176,7 @@ enum ArchiveService {
         while true {
             let numberedBase = index == 1 ? baseName : "\(baseName) \(index)"
             let candidate = directory.appendingPathComponent(numberedBase + format.filenameSuffix)
-            if !fileManager.fileExists(atPath: candidate.path) { return candidate }
+            if !FileSystemService.entryExists(at: candidate) { return candidate }
             index += 1
         }
     }

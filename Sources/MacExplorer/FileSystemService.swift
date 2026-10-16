@@ -29,7 +29,9 @@ final class FileSystemService {
     }
     static let shared = FileSystemService()
 
-    private let manager = FileManager.default
+    private let manager: FileManager
+
+    init(fileManager: FileManager = .default) { manager = fileManager }
 
     // Keep the first directory pass limited to metadata needed to render and
     // sort the list. Finder tags are extended attributes and are noticeably
@@ -195,16 +197,15 @@ final class FileSystemService {
     @discardableResult
     func createEmptyFile(in directory: URL, preferredName: String = L10n.text("New text document.txt")) throws -> URL {
         let destination = uniqueDestination(named: preferredName, in: directory, preservingExtension: true)
-        guard manager.createFile(atPath: destination.path, contents: Data()) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
+        // The destination may have appeared since uniqueDestination checked it.
+        try Data().write(to: destination, options: .withoutOverwriting)
         return destination
     }
 
     @discardableResult
     func rename(_ source: URL, to proposedName: String) throws -> URL {
         let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
             throw FileSystemServiceError.invalidName
         }
 
@@ -218,7 +219,7 @@ final class FileSystemService {
         guard !changes.isEmpty else { throw FileSystemServiceError.noSelection }
         let prepared = try changes.map { change -> (source: URL, temporary: URL, destination: URL) in
             let name = change.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
                 throw FileSystemServiceError.invalidName
             }
             let parent = change.source.deletingLastPathComponent()
@@ -232,7 +233,8 @@ final class FileSystemService {
 
         let originalPaths = Set(prepared.map { $0.source.standardizedFileURL.path })
         let destinationPaths = prepared.map { $0.destination.standardizedFileURL.path }
-        guard Set(destinationPaths).count == destinationPaths.count else {
+        guard originalPaths.count == prepared.count,
+              Set(destinationPaths).count == destinationPaths.count else {
             throw FileSystemServiceError.nameConflict
         }
         for entry in prepared where Self.entryExists(at: entry.destination) {
@@ -241,31 +243,45 @@ final class FileSystemService {
             }
         }
 
-        var staged: [(source: URL, temporary: URL, destination: URL)] = []
+        typealias RenameEntry = (source: URL, temporary: URL, destination: URL)
+        func restore(_ staged: [RenameEntry], completed: [RenameEntry] = []) -> [URL] {
+            var preserved: [URL] = []
+            // First evacuate every final name, then restore original names.
+            // Restoring directly fails for swaps/cycles (A→B, B→A).
+            for entry in completed.reversed() {
+                do { try manager.moveItem(at: entry.destination, to: entry.temporary) }
+                catch { preserved.append(entry.destination) }
+            }
+            for entry in staged.reversed() where Self.entryExists(at: entry.temporary) {
+                do { try manager.moveItem(at: entry.temporary, to: entry.source) }
+                catch { preserved.append(entry.temporary) }
+            }
+            return preserved
+        }
+        var staged: [RenameEntry] = []
         do {
             for entry in prepared {
                 try manager.moveItem(at: entry.source, to: entry.temporary)
                 staged.append(entry)
             }
         } catch {
-            for entry in staged.reversed() {
-                try? manager.moveItem(at: entry.temporary, to: entry.source)
+            let preserved = restore(staged)
+            if !preserved.isEmpty {
+                throw FileRecoveryError(underlyingError: error, preservedURLs: preserved)
             }
             throw error
         }
 
-        var completed: [(source: URL, temporary: URL, destination: URL)] = []
+        var completed: [RenameEntry] = []
         do {
             for entry in staged {
                 try manager.moveItem(at: entry.temporary, to: entry.destination)
                 completed.append(entry)
             }
         } catch {
-            for entry in completed.reversed() {
-                try? manager.moveItem(at: entry.destination, to: entry.source)
-            }
-            for entry in staged.dropFirst(completed.count).reversed() {
-                try? manager.moveItem(at: entry.temporary, to: entry.source)
+            let preserved = restore(staged, completed: completed)
+            if !preserved.isEmpty {
+                throw FileRecoveryError(underlyingError: error, preservedURLs: preserved)
             }
             throw error
         }

@@ -36,19 +36,32 @@ final class CreatedItemsHistoryState {
     }
 
     private let originalURLs: [URL]
+    private let identities: [URL: FileEntryIdentity]
     private var stashedItems: [StashedItem] = []
-    private let manager = FileManager.default
+    private let manager: FileManager
+    private var needsRecovery = false
 
-    init(urls: [URL]) {
+    init(urls: [URL], fileManager: FileManager = .default) {
         originalURLs = urls
+        identities = Dictionary(urls.compactMap { url in
+            FileEntryIdentity(at: url).map { (url, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        manager = fileManager
     }
 
     func undo() throws {
+        guard !needsRecovery else { throw FileSystemServiceError.nameConflict }
         guard stashedItems.isEmpty else { return }
+        for original in originalURLs {
+            guard let expected = identities[original],
+                  FileEntryIdentity(at: original) == expected else {
+                throw FileSystemServiceError.nameConflict
+            }
+        }
         var moved: [StashedItem] = []
         do {
             for original in originalURLs {
-                guard manager.fileExists(atPath: original.path) else {
+                guard FileSystemService.entryExists(at: original) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
                 // Keep the undo stash on the item's own volume. For a large
@@ -74,21 +87,31 @@ final class CreatedItemsHistoryState {
             }
             stashedItems = moved
         } catch {
+            var preserved: [URL] = []
             for item in moved.reversed() {
-                try? manager.moveItem(at: item.stashed, to: item.original)
-                try? manager.removeItem(at: item.container)
+                do {
+                    try manager.moveItem(at: item.stashed, to: item.original)
+                    try? manager.removeItem(at: item.container)
+                } catch {
+                    preserved.append(item.stashed)
+                }
+            }
+            if !preserved.isEmpty {
+                needsRecovery = true
+                throw FileRecoveryError(underlyingError: error, preservedURLs: preserved)
             }
             throw error
         }
     }
 
     func redo() throws {
+        guard !needsRecovery else { throw FileSystemServiceError.nameConflict }
         guard !stashedItems.isEmpty else { return }
         let items = stashedItems
         var restored: [StashedItem] = []
         do {
             for item in items {
-                guard !manager.fileExists(atPath: item.original.path) else {
+                guard !FileSystemService.entryExists(at: item.original) else {
                     throw FileSystemServiceError.nameConflict
                 }
                 try manager.moveItem(at: item.stashed, to: item.original)
@@ -97,15 +120,24 @@ final class CreatedItemsHistoryState {
             stashedItems.removeAll(keepingCapacity: true)
             for item in items { try? manager.removeItem(at: item.container) }
         } catch {
+            var preserved: [URL] = []
             for item in restored.reversed() {
-                try? manager.moveItem(at: item.original, to: item.stashed)
+                do { try manager.moveItem(at: item.original, to: item.stashed) }
+                catch { preserved.append(item.original) }
+            }
+            if !preserved.isEmpty {
+                needsRecovery = true
+                preserved += items.filter { FileSystemService.entryExists(at: $0.stashed) }.map(\.stashed)
+                throw FileRecoveryError(underlyingError: error, preservedURLs: preserved)
             }
             throw error
         }
     }
 
     deinit {
-        for item in stashedItems { try? manager.removeItem(at: item.container) }
+        if !needsRecovery {
+            for item in stashedItems { try? manager.removeItem(at: item.container) }
+        }
     }
 }
 
@@ -2403,7 +2435,7 @@ final class MainViewController: NSViewController,
         options: ArchiveCreationOptions
     ) {
         let requested = parent.appendingPathComponent(options.baseName + options.format.filenameSuffix)
-        guard FileManager.default.fileExists(atPath: requested.path) else {
+        guard FileSystemService.entryExists(at: requested) else {
             startCompression(urls: urls, destination: requested, options: options)
             return
         }
@@ -2422,12 +2454,7 @@ final class MainViewController: NSViewController,
             guard let self else { return }
             switch response {
             case .alertFirstButtonReturn:
-                do {
-                    try FileManager.default.removeItem(at: requested)
-                    self.startCompression(urls: urls, destination: requested, options: options)
-                } catch {
-                    self.present(error: error)
-                }
+                self.startCompression(urls: urls, destination: requested, options: options, replacing: true)
             case .alertSecondButtonReturn:
                 let unique = ArchiveService.uniqueDestination(
                     baseName: options.baseName,
@@ -2446,13 +2473,17 @@ final class MainViewController: NSViewController,
     private func startCompression(
         urls: [URL],
         destination: URL,
-        options: ArchiveCreationOptions
+        options: ArchiveCreationOptions,
+        replacing: Bool = false
     ) {
+        let transaction: ArchiveOutputTransaction
+        do { transaction = try ArchiveOutputTransaction(destination: destination, replacing: replacing) }
+        catch { present(error: error); return }
         guard let command = ArchiveService.creationCommand(
             format: options.format,
             compressionLevel: options.compressionLevel,
             sources: urls,
-            destination: destination
+            destination: transaction.outputURL
         ) else {
             present(message: L10n.text("Cannot compress items"), detail: L10n.text("Select items from the same folder."))
             return
@@ -2465,16 +2496,17 @@ final class MainViewController: NSViewController,
         ArchiveOperationManager.shared.start(
             command: command,
             sources: urls,
-            destination: destination,
+            destination: transaction.outputURL,
             format: options.format,
             parentWindow: view.window
-        ) { [weak self] result in
+        ) { [weak self, transaction] result in
+            // Complete filesystem work even if its originating window was closed.
+            let finalResult = result.flatMap { _ in Result { try transaction.commit() } }
             guard let self else { return }
-            switch result {
+            switch finalResult {
             case .success:
                 self.loadDirectory(selectURL: destination)
             case .failure(let error):
-                try? FileManager.default.removeItem(at: destination)
                 self.updateControls()
                 if case FileTransferError.cancelled = error {
                     break
@@ -2515,23 +2547,26 @@ final class MainViewController: NSViewController,
         if let environment = command.environment { process.environment = environment }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] task in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if task.terminationStatus == 0 {
-                    self.loadDirectory(selectURL: destination)
-                } else {
-                    try? FileManager.default.removeItem(at: destination)
-                    self.updateControls()
-                    self.present(message: L10n.text("Extraction failed"), detail: archive.path)
-                }
+        let destinationIdentity = FileEntryIdentity(at: destination)
+        FileOperationManager.shared.performSerializedMutation({
+            guard destinationIdentity != nil,
+                  FileEntryIdentity(at: destination) == destinationIdentity else {
+                throw FileSystemServiceError.nameConflict
             }
-        }
-        do {
             try process.run()
-        } catch {
-            try? FileManager.default.removeItem(at: destination)
-            present(error: error)
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw CocoaError(.fileReadCorruptFile) }
+        }) { [weak self] result in
+            switch result {
+            case .success:
+                self?.loadDirectory(selectURL: destination)
+            case .failure(let error):
+                if FileEntryIdentity(at: destination) == destinationIdentity {
+                    try? FileManager.default.removeItem(at: destination)
+                }
+                self?.updateControls()
+                self?.present(message: L10n.text("Extraction failed"), detail: error.localizedDescription)
+            }
         }
     }
 
