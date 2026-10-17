@@ -582,4 +582,5 @@
 "Use Mac Explorer for opening folders and Show in Finder requests. System Open/Save dialogs and apps that explicitly use Finder are unchanged. Restart other apps or log out if the change is not reflected immediately." = "폴더 열기 및 ‘Finder에서 보기’ 요청을 Mac Explorer에서 처리합니다. 시스템 열기·저장 대화상자와 Finder를 직접 지정하는 앱은 바뀌지 않습니다. 바로 반영되지 않으면 다른 앱을 재시작하거나 로그아웃 후 다시 로그인하세요.";
 "Run the installed Mac Explorer app to change the default file manager." = "기본 파일 탐색기를 변경하려면 설치된 Mac Explorer 앱에서 실행하세요.";
 "The folder handler changed, but the file viewer preference could not be saved. Please try again." = "폴더 열기 연결은 변경했으나 파일 보기 설정을 저장하지 못했습니다. 다시 시도하세요.";
+"The default file manager settings could not be fully applied. Please try again." = "기본 파일 탐색기 연결이 완전히 적용되지 않았습니다. 다시 시도하세요.";
 "The operation could not be fully rolled back. Files were preserved at:" = "작업을 완전히 원상 복구하지 못했습니다. 파일은 다음 위치에 보존되어 있습니다:";

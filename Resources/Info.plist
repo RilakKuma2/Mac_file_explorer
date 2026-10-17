@@ -43,11 +43,26 @@
                 <string>public.folder</string>
             </array>
         </dict>
+        <!-- Sandboxed senders (including AirDrop) validate the selected file's
+             type before delivering a reveal request as an open-document event.
+             Accept file locations without becoming their default content viewer. -->
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>File Location</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>None</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.item</string>
+            </array>
+        </dict>
     </array>
     <key>CFBundleShortVersionString</key>
 	<string>0.1</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>5</string>
     <key>SUFeedURL</key>
     <string>https://github.com/RilakKuma2/Mac_file_explorer/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>

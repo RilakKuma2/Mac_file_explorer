@@ -1,9 +1,82 @@
 import AppKit
 import Testing
+import UniformTypeIdentifiers
 @testable import MacExplorer
 
 @Suite("Default file viewer integration")
 struct DefaultFileViewerTests {
+    @Test("Sandboxed reveal senders can deliver files without taking over their default viewers")
+    func sandboxedRevealDocumentTypes() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
+        let plist = try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let types = try #require(plist["CFBundleDocumentTypes"] as? [[String: Any]])
+        let files = try #require(types.first {
+            ($0["LSItemContentTypes"] as? [String])?.contains("public.item") == true
+        })
+        #expect(files["CFBundleTypeRole"] as? String == "Viewer")
+        #expect(files["LSHandlerRank"] as? String == "None")
+        #expect(files["CFBundleTypeIconFile"] == nil)
+        for type in [UTType.png, .jpeg, .pdf, .zip, .plainText, .movie, .package] {
+            #expect(type.conforms(to: .item))
+        }
+        // Only real folders participate in default-handler selection. Do not
+        // give generic files an Alternate/Default rank to work around AirDrop.
+        for declaration in types where declaration["LSHandlerRank"] as? String != "None" {
+            #expect(declaration["LSItemContentTypes"] as? [String] == ["public.folder"])
+        }
+    }
+
+    @Test("Default viewer setup succeeds only when both system handlers match")
+    func registrationVerification() {
+        let identifier = "app.macexplorer.filemanager"
+        #expect(DefaultFileViewer.Registration(folderHandler: identifier, fileViewer: identifier).matches(identifier))
+        #expect(!DefaultFileViewer.Registration(folderHandler: identifier, fileViewer: "com.apple.finder").matches(identifier))
+        #expect(!DefaultFileViewer.Registration(folderHandler: "com.apple.finder", fileViewer: identifier).matches(identifier))
+        #expect(!DefaultFileViewer.Registration(folderHandler: nil, fileViewer: nil).matches(identifier))
+    }
+
+    @Test("Restoring Finder removes the alternate viewer override instead of opening files with Finder")
+    func finderRestorationUsesSystemFallback() {
+        let finder = DefaultFileViewer.finderIdentifier
+        #expect(DefaultFileViewer.fileViewerOverride(for: finder) == nil)
+        #expect(DefaultFileViewer.fileViewerOverride(for: "") == nil)
+        #expect(DefaultFileViewer.fileViewerOverride(for: "app.macexplorer.filemanager") == "app.macexplorer.filemanager")
+        #expect(DefaultFileViewer.fileViewerOverride(for: "com.example.other-viewer") == "com.example.other-viewer")
+        #expect(DefaultFileViewer.Registration(folderHandler: finder, fileViewer: nil).matches(finder))
+        #expect(!DefaultFileViewer.Registration(folderHandler: finder, fileViewer: finder).matches(finder))
+        #expect(!DefaultFileViewer.Registration(folderHandler: finder, fileViewer: "app.macexplorer.filemanager").matches(finder))
+        #expect(!DefaultFileViewer.Registration(folderHandler: "app.macexplorer.filemanager", fileViewer: nil).matches(finder))
+        #expect(!DefaultFileViewer.Registration(folderHandler: nil, fileViewer: nil).matches(finder))
+    }
+
+    @Test("Desktop migration does not undo default app choices without a saved migration record")
+    func legacyMigrationRequiresSavedState() throws {
+        let suiteName = "MacExplorerTests.DefaultViewer.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        #expect(!FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+        defaults.set(false, forKey: DefaultFileViewer.enabledKey)
+        #expect(!FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+        defaults.set("com.apple.finder", forKey: "PreviousFolderHandlerBundleIdentifier")
+        #expect(FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+        defaults.set(true, forKey: DefaultFileViewer.enabledKey)
+        #expect(!FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+    }
+
+    @Test("An explicitly empty previous viewer is still a real migration record")
+    func legacyMigrationWithUnsetViewer() throws {
+        let suiteName = "MacExplorerTests.DefaultViewer.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: DefaultFileViewer.enabledKey)
+        defaults.set("", forKey: "PreviousFileViewerBundleIdentifier")
+        #expect(FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+        defaults.removeObject(forKey: "PreviousFileViewerBundleIdentifier")
+        #expect(!FinderDesktopOpenInterceptor.hasLegacyRegistrationToRestore(defaults: defaults))
+    }
+
     @Test("Reveal diagnostics describe formats without leaking filenames")
     func diagnosticPrivacy() {
         let list = NSAppleEventDescriptor.list()

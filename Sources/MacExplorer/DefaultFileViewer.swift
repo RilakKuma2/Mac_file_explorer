@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import UniformTypeIdentifiers
 import OSLog
 
@@ -32,6 +33,38 @@ enum DefaultFileViewer {
         return type
     }
     static let enabledKey = "DefaultFileViewerExplicitlyEnabled"
+    static let finderIdentifier = "com.apple.finder"
+
+    /// Finder is the system fallback, not an alternate document-opening app.
+    /// Explicitly setting NSFileViewer to Finder routes reveal requests through
+    /// ordinary document opening, which sandboxed senders can have rejected.
+    static func fileViewerOverride(for identifier: String) -> String? {
+        identifier == finderIdentifier || identifier.isEmpty ? nil : identifier
+    }
+
+    struct Registration {
+        let folderHandler: String?
+        let fileViewer: String?
+
+        func matches(_ identifier: String) -> Bool {
+            folderHandler == identifier && fileViewer == DefaultFileViewer.fileViewerOverride(for: identifier)
+        }
+    }
+
+    static var registration: Registration {
+        Registration(
+            folderHandler: LSCopyDefaultRoleHandlerForContentType("public.folder" as CFString, .all)?
+                .takeRetainedValue() as String?,
+            fileViewer: CFPreferencesCopyValue("NSFileViewer" as CFString,
+                kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? String
+        )
+    }
+
+    static func logRegistrationStatus() {
+        guard let identifier = Bundle.main.bundleIdentifier else { return }
+        let current = registration
+        requestLogger.notice("Default viewer registration: foldersMatch=\(current.folderHandler == identifier) revealMatches=\(current.fileViewer == identifier) explicitlyEnabled=\(UserDefaults.standard.bool(forKey: enabledKey))")
+    }
     static let revealEventClass: AEEventClass = 0x6D697363 // misc
     // Finder.sdef defines reveal as misc/mvis. Keep the earlier revl alias for
     // clients that already send it, but do not rely on it for Finder compatibility.
@@ -83,7 +116,7 @@ enum DefaultFileViewer {
 
     static func configure(useExplorer: Bool, completion: @escaping (Error?) -> Void) {
         let target = useExplorer ? Bundle.main.bundleURL
-            : NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.finder")
+            : NSWorkspace.shared.urlForApplication(withBundleIdentifier: finderIdentifier)
         guard let target, target.pathExtension == "app",
               let identifier = Bundle(url: target)?.bundleIdentifier else {
             completion(NSError(domain: "DefaultFileViewer", code: 1, userInfo: [
@@ -95,15 +128,22 @@ enum DefaultFileViewer {
         NSWorkspace.shared.setDefaultApplication(at: target, toOpen: UTType.folder) { error in
             DispatchQueue.main.async {
                 guard error == nil else { completion(error); return }
-                CFPreferencesSetValue("NSFileViewer" as CFString, identifier as CFString,
+                let viewerOverride = fileViewerOverride(for: identifier).map { $0 as CFString }
+                CFPreferencesSetValue("NSFileViewer" as CFString, viewerOverride,
                     kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
                 let saved = CFPreferencesSynchronize(kCFPreferencesAnyApplication,
                     kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+                guard saved, registration.matches(identifier) else {
+                    logRegistrationStatus()
+                    completion(NSError(domain: "DefaultFileViewer", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: L10n.text("The default file manager settings could not be fully applied. Please try again.")
+                    ]))
+                    return
+                }
                 // Prevent the old Desktop-only migration from undoing this explicit choice.
                 UserDefaults.standard.set(useExplorer, forKey: enabledKey)
-                completion(saved ? nil : NSError(domain: "DefaultFileViewer", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: L10n.text("The folder handler changed, but the file viewer preference could not be saved. Please try again.")
-                ]))
+                logRegistrationStatus()
+                completion(nil)
             }
         }
     }

@@ -97,6 +97,43 @@ struct BreadcrumbBarViewTests {
         }
     }
 
+    @Test("Child menu finishes during nested menu tracking inside a dispatched click", arguments: ["folders", "empty", "missing"])
+    @MainActor
+    func childMenuLoadsDuringTracking(outcome: String) async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacExplorerMenuTrackingTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        if outcome == "folders" {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("Child"), withIntermediateDirectories: false)
+        }
+        let directory = outcome == "missing" ? root.appendingPathComponent("Missing") : root
+        let expected = outcome == "folders" ? "Child"
+            : L10n.text(outcome == "empty" ? "No subfolders" : "Unable to load subfolders")
+        let bar = BreadcrumbBarView()
+
+        // NavigationClickDispatcher opens the popup inside a main-queue block.
+        // Its nested tracking loop must deliver the result before that block
+        // returns, not only after the user dismisses the popup.
+        let loaded: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                let menu = bar.makeChildDirectoryMenu(for: directory)
+                let keepAlive = Timer(timeInterval: 0.01, repeats: true) { _ in }
+                RunLoop.main.add(keepAlive, forMode: .eventTracking)
+                defer {
+                    keepAlive.invalidate()
+                    bar.menuDidClose(menu)
+                }
+                let deadline = Date().addingTimeInterval(2)
+                while menu.items.first?.title != expected && Date() < deadline {
+                    RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.02))
+                }
+                continuation.resume(returning: menu.items.first?.title == expected)
+            }
+        }
+        #expect(loaded)
+    }
+
     @Test("Breadcrumb separators are accessible keyboard-focusable menu buttons")
     @MainActor
     func accessibleChevronButtons() {

@@ -480,6 +480,14 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     @objc private func showChildDirectories(_ sender: NSButton) {
         guard chevronDirectoryURLs.indices.contains(sender.tag) else { return }
         let directoryURL = chevronDirectoryURLs[sender.tag]
+        let menu = makeChildDirectoryMenu(for: directoryURL)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 3), in: sender)
+        if activeChildDirectoryMenu === menu {
+            cancelChildDirectoryMenuRequest(closeMenu: false)
+        }
+    }
+
+    func makeChildDirectoryMenu(for directoryURL: URL) -> NSMenu {
         cancelChildDirectoryMenuRequest(closeMenu: true)
 
         childDirectoryRequestID &+= 1
@@ -504,15 +512,16 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
                 )
             }
             guard !token.isCancelled else { return }
-            DispatchQueue.main.async { [weak self] in
+            // The popup can be tracking inside NavigationClickDispatcher's
+            // main-queue block. Another main-queue block cannot run until that
+            // popup closes. Deliver through its nested tracking run loop.
+            RunLoop.main.perform(inModes: [.common, .eventTracking]) { [weak self] in
                 self?.finishChildDirectoryLoad(result, requestID: requestID, token: token)
             }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
         }
 
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 3), in: sender)
-        if activeChildDirectoryMenu === menu {
-            cancelChildDirectoryMenuRequest(closeMenu: false)
-        }
+        return menu
     }
 
     private func finishChildDirectoryLoad(

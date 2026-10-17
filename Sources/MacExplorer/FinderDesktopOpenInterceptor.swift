@@ -56,19 +56,20 @@ final class FinderDesktopOpenInterceptor {
     /// preference. Restore that registration once so the new integration is
     /// strictly limited to Finder's Desktop.
     func restoreLegacyGlobalFolderRegistrationIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: DefaultFileViewer.enabledKey) else { return }
-        let appIdentifier = Bundle.main.bundleIdentifier ?? "app.macexplorer.filemanager"
         let defaults = UserDefaults.standard
+        guard Self.hasLegacyRegistrationToRestore(defaults: defaults) else { return }
+        let appIdentifier = Bundle.main.bundleIdentifier ?? "app.macexplorer.filemanager"
 
-        if currentFolderHandler == appIdentifier {
-            let previous = defaults.string(forKey: Self.previousFolderHandlerKey) ?? "com.apple.finder"
+        if currentFolderHandler == appIdentifier,
+           let savedHandler = defaults.string(forKey: Self.previousFolderHandlerKey) {
+            let previous = savedHandler.isEmpty ? "com.apple.finder" : savedHandler
             _ = LSSetDefaultRoleHandlerForContentType("public.folder" as CFString, .all, previous as CFString)
             _ = LSSetDefaultRoleHandlerForContentType("public.folder" as CFString, .viewer, previous as CFString)
         }
 
-        if currentFileViewer == appIdentifier {
-            let previous = defaults.string(forKey: Self.previousFileViewerKey)
-            let value: CFPropertyList? = previous.flatMap { $0.isEmpty ? nil : $0 as CFString }
+        if currentFileViewer == appIdentifier,
+           let previous = defaults.string(forKey: Self.previousFileViewerKey) {
+            let value: CFPropertyList? = DefaultFileViewer.fileViewerOverride(for: previous).map { $0 as CFString }
             CFPreferencesSetValue(
                 "NSFileViewer" as CFString,
                 value,
@@ -85,6 +86,15 @@ final class FinderDesktopOpenInterceptor {
 
         defaults.removeObject(forKey: Self.previousFileViewerKey)
         defaults.removeObject(forKey: Self.previousFolderHandlerKey)
+    }
+
+    static func hasLegacyRegistrationToRestore(defaults: UserDefaults) -> Bool {
+        guard !defaults.bool(forKey: DefaultFileViewer.enabledKey) else { return false }
+        // An absent opt-in flag is not evidence that the Desktop integration
+        // changed these settings. Without an actual saved migration record,
+        // this used to undo choices made via Launch Services on every launch.
+        return defaults.string(forKey: previousFolderHandlerKey) != nil
+            || defaults.string(forKey: previousFileViewerKey) != nil
     }
 
     private var currentFolderHandler: String? {

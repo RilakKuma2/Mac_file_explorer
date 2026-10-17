@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // interrupted build that used the old replacement Desktop.
         ExplorerDesktopManager.shared.setEnabled(false)
         FinderDesktopOpenInterceptor.shared.restoreLegacyGlobalFolderRegistrationIfNeeded()
+        DefaultFileViewer.logRegistrationStatus()
         FinderDesktopOpenInterceptor.shared.setEnabled(
             ExplorerPreferences.openFinderDesktopFoldersInExplorer,
             presentingWindow: controller.window
