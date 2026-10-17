@@ -3444,9 +3444,12 @@ final class FileListViewController: NSViewController,
                 continue
             }
 
-            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey]),
-                  let isDirectory = values.isDirectory else { return nil }
-            sources.append(FileDropSource(url: url, isDirectory: isDirectory))
+            // Validation runs synchronously in AppKit's drag tracking loop.
+            // Never stat an external/other-tab URL here: a sleeping disk or
+            // network mount could freeze all clicks. Treat unknown entries as
+            // directories conservatively for the self/descendant safety check;
+            // the transfer engine validates the actual files before modifying them.
+            sources.append(FileDropSource(url: url, isDirectory: true))
         }
         cachedFileDropSources = (sequenceNumber, urls, sources)
         return sources
@@ -3457,7 +3460,7 @@ final class FileListViewController: NSViewController,
         return .folder(item.url, isPackage: item.isPackage)
     }
 
-    private func fileDropDecision(
+    func fileDropDecision(
         for draggingInfo: NSDraggingInfo,
         target: FileDropTarget
     ) -> (urls: [URL], decision: FileDropDecision)? {
@@ -3477,6 +3480,16 @@ final class FileListViewController: NSViewController,
             copyRequested: NSEvent.modifierFlags.contains(.option)
         )
         return (urls, decision)
+    }
+
+    @discardableResult
+    func acceptFileDrop(_ info: NSDraggingInfo, target: FileDropTarget) -> Bool {
+        guard let result = fileDropDecision(for: info, target: target),
+              result.decision.isAccepted,
+              let destination = result.decision.destination,
+              let delegate else { return false }
+        delegate.fileList(self, didRequestImport: result.urls, destination: destination, move: result.decision.shouldMove)
+        return true
     }
 
     func collectionView(
@@ -3516,16 +3529,7 @@ final class FileListViewController: NSViewController,
         } else {
             target = .background(directoryURL)
         }
-        guard let result = fileDropDecision(for: draggingInfo, target: target),
-              result.decision.isAccepted,
-              let destination = result.decision.destination else { return false }
-        delegate?.fileList(
-            self,
-            didRequestImport: result.urls,
-            destination: destination,
-            move: result.decision.shouldMove
-        )
-        return true
+        return acceptFileDrop(draggingInfo, target: target)
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
@@ -3539,6 +3543,7 @@ final class FileListViewController: NSViewController,
         willBeginAt screenPoint: NSPoint,
         forRowIndexes rowIndexes: IndexSet
     ) {
+        FileDragDiagnostics.logger.notice("File drag began: view=details count=\(rowIndexes.count)")
         let rows = Array(rowIndexes)
         let nameColumn = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
         guard nameColumn >= 0, !rows.isEmpty else { return }
@@ -3562,6 +3567,20 @@ final class FileListViewController: NSViewController,
             draggingItem.draggingFrame = frame
             draggingItem.imageComponentsProvider = { components }
         }
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        cachedFileDropSources = nil
+        FileDragDiagnostics.logger.notice("File drag ended: view=details operation=\(operation.rawValue)")
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItemsAt indexPaths: Set<IndexPath>) {
+        FileDragDiagnostics.logger.notice("File drag began: view=icons count=\(indexPaths.count)")
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, dragOperation operation: NSDragOperation) {
+        cachedFileDropSources = nil
+        FileDragDiagnostics.logger.notice("File drag ended: view=icons operation=\(operation.rawValue)")
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
@@ -3589,16 +3608,7 @@ final class FileListViewController: NSViewController,
         } else {
             target = .background(directoryURL)
         }
-        guard let result = fileDropDecision(for: info, target: target),
-              result.decision.isAccepted,
-              let destination = result.decision.destination else { return false }
-        delegate?.fileList(
-            self,
-            didRequestImport: result.urls,
-            destination: destination,
-            move: result.decision.shouldMove
-        )
-        return true
+        return acceptFileDrop(info, target: target)
     }
 
     func fileTableDidPressOpen(_ tableView: NSView) {

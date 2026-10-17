@@ -66,6 +66,8 @@ private final class BreadcrumbChildDirectoryLoadToken: @unchecked Sendable {
 
 private class BreadcrumbComponentButton: NSButton {
     private var hoverTrackingArea: NSTrackingArea?
+    private var isHovered = false
+    var isDropTarget = false { didSet { updateHighlight() } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -90,14 +92,22 @@ private class BreadcrumbComponentButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.35).cgColor
+        isHovered = true
+        updateHighlight()
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
-        layer?.borderWidth = 0
+        isHovered = false
+        updateHighlight()
+    }
+
+    private func updateHighlight() {
+        let highlighted = isHovered || isDropTarget
+        layer?.backgroundColor = highlighted
+            ? NSColor.controlAccentColor.withAlphaComponent(isDropTarget ? 0.30 : 0.16).cgColor
+            : NSColor.clear.cgColor
+        layer?.borderWidth = highlighted ? 1 : 0
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(isDropTarget ? 0.85 : 0.35).cgColor
     }
 
     override func resetCursorRects() {
@@ -123,6 +133,13 @@ protocol BreadcrumbBarViewDelegate: AnyObject {
     func breadcrumbBarDidRequestHome(_ breadcrumbBar: BreadcrumbBarView)
     func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, didSelect url: URL)
     func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, didSubmitPath path: String)
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, validateDrop info: NSDraggingInfo, into directory: URL) -> NSDragOperation
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, acceptDrop info: NSDraggingInfo, into directory: URL) -> Bool
+}
+
+extension BreadcrumbBarViewDelegate {
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, validateDrop info: NSDraggingInfo, into directory: URL) -> NSDragOperation { [] }
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, acceptDrop info: NSDraggingInfo, into directory: URL) -> Bool { false }
 }
 
 final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
@@ -145,6 +162,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     private var childDirectoryRequestID: UInt = 0
     private var activeChildDirectoryRequestID: UInt?
     private var activeChildDirectoryMenu: NSMenu?
+    private weak var highlightedDropButton: BreadcrumbComponentButton?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -153,6 +171,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.separatorColor.cgColor
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        registerForDraggedTypes([.fileURL])
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .horizontal
@@ -206,8 +225,23 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         addCursorRect(bounds, cursor: .iBeam)
         for case let button as NSButton in stack.arrangedSubviews
         where ["breadcrumbCrumb", "breadcrumbChevron"].contains(button.identifier?.rawValue ?? "") {
+            guard !button.isHiddenOrHasHiddenAncestor else { continue }
             addCursorRect(convert(button.bounds, from: button), cursor: .pointingHand)
         }
+    }
+
+    override func layout() {
+        // Keep a readable current folder in narrow split panes instead of
+        // reducing every ancestor name to zero and showing only chevrons.
+        let retainedComponents = bounds.width < 240 ? 1 : (bounds.width < 400 ? 2 : componentURLs.count)
+        let firstVisible = max(0, componentURLs.count - retainedComponents)
+        for case let button as NSButton in stack.arrangedSubviews where button.tag >= 0 {
+            let identifier = button.identifier?.rawValue
+            if identifier == "breadcrumbCrumb" || identifier == "breadcrumbChevron" {
+                button.isHidden = button.tag < firstVisible
+            }
+        }
+        super.layout()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -230,6 +264,90 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         beginEditing()
     }
 
+    // Only actual path components are destinations. The Home dashboard, virtual
+    // locations, chevrons and editable whitespace must never silently move files.
+    func dropDestination(atWindowPoint point: NSPoint) -> URL? {
+        guard let button = dropButton(atWindowPoint: point) else { return nil }
+        return dropDirectory(for: button)
+    }
+
+    private func dropDirectory(for button: NSButton) -> URL? {
+        if componentURLs.indices.contains(button.tag) { return componentURLs[button.tag] }
+        // Under the user's home directory its name is abbreviated to the house
+        // icon. It is a real ancestor only in this case, not on the dashboard or
+        // when browsing an unrelated volume.
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        if button.tag == -1,
+           representedPath == home.path || representedPath.hasPrefix(home.path + "/") {
+            return home
+        }
+        return nil
+    }
+
+    private func dropButton(atWindowPoint point: NSPoint) -> BreadcrumbComponentButton? {
+        guard !isEditingAddress, !isHiddenOrHasHiddenAncestor,
+              bounds.contains(convert(point, from: nil)) else { return nil }
+        return stack.arrangedSubviews.compactMap { $0 as? BreadcrumbComponentButton }.first {
+            $0.identifier?.rawValue == "breadcrumbCrumb"
+                && dropDirectory(for: $0) != nil
+                && !$0.isHiddenOrHasHiddenAncestor
+                && $0.bounds.contains($0.convert(point, from: nil))
+        }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        cancelChildDirectoryMenuRequest(closeMenu: true)
+        FileDragDiagnostics.logger.notice("Breadcrumb drag entered: sequence=\(sender.draggingSequenceNumber)")
+        return draggingUpdated(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let destination = dropDestination(atWindowPoint: sender.draggingLocation),
+              let delegate else {
+            clearDropHighlight()
+            return []
+        }
+        let operation = delegate.breadcrumbBar(self, validateDrop: sender, into: destination)
+        let button = operation.isEmpty ? nil : dropButton(atWindowPoint: sender.draggingLocation)
+        if highlightedDropButton !== button {
+            clearDropHighlight()
+            highlightedDropButton = button
+            button?.isDropTarget = true
+        }
+        return operation
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        clearDropHighlight()
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !draggingUpdated(sender).isEmpty
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { clearDropHighlight() }
+        guard let destination = dropDestination(atWindowPoint: sender.draggingLocation),
+              let delegate else { return false }
+        let accepted = delegate.breadcrumbBar(self, acceptDrop: sender, into: destination)
+        FileDragDiagnostics.logger.notice("Breadcrumb drop: sequence=\(sender.draggingSequenceNumber) accepted=\(accepted)")
+        return accepted
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        clearDropHighlight()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { clearDropHighlight() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func clearDropHighlight() {
+        highlightedDropButton?.isDropTarget = false
+        highlightedDropButton = nil
+    }
+
     /// Routes a window-level mouse-down to the exact breadcrumb action. This is
     /// used by the browser window so the address controls remain clickable even
     /// when a split-view or titlebar tracking view overlaps AppKit's hit testing.
@@ -240,7 +358,8 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
 
         for case let button as NSButton in stack.arrangedSubviews {
             let identifier = button.identifier?.rawValue
-            guard identifier == "breadcrumbCrumb" || identifier == "breadcrumbChevron" else { continue }
+            guard !button.isHiddenOrHasHiddenAncestor,
+                  identifier == "breadcrumbCrumb" || identifier == "breadcrumbChevron" else { continue }
             if button.bounds.contains(button.convert(windowPoint, from: nil)) {
                 NavigationClickDispatcher.enqueue(button)
                 return true
@@ -297,6 +416,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     }
 
     private func showSpecial(title: String, symbol: String, representedPath: String) {
+        clearDropHighlight()
         cancelChildDirectoryMenuRequest(closeMenu: true)
         removeOutsideClickMonitor()
         self.representedPath = representedPath
@@ -319,6 +439,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     }
 
     func beginEditing() {
+        clearDropHighlight()
         cancelChildDirectoryMenuRequest(closeMenu: true)
         editField.stringValue = representedPath
         editField.isHidden = false
@@ -345,6 +466,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     }
 
     private func rebuild(homeOnly: Bool) {
+        clearDropHighlight()
         cancelChildDirectoryMenuRequest(closeMenu: true)
         removeOutsideClickMonitor()
         chevronDirectoryURLs = []

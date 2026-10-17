@@ -62,22 +62,22 @@ private final class ExplorerPaneHostView: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
 
-        browser.view.translatesAutoresizingMaskIntoConstraints = false
+        // A pane's outer width must not inherit the combined fitting widths of
+        // its toolbar, sidebar and file columns. They adapt/scroll inside it.
+        browser.view.translatesAutoresizingMaskIntoConstraints = true
+        browser.view.autoresizingMask = [.width, .height]
         addSubview(browser.view)
-        NSLayoutConstraint.activate([
-            browser.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            browser.view.trailingAnchor.constraint(equalTo: trailingAnchor),
-            browser.view.topAnchor.constraint(equalTo: topAnchor),
-            browser.view.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
+        browser.view.frame = bounds
 
-        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
-        minimumWidth.priority = .defaultHigh
-        minimumWidth.isActive = true
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        browser.view.frame = bounds
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -91,9 +91,30 @@ private final class ExplorerPaneHostView: NSView {
     }
 }
 
+/// Stable split-view children keep the divider position when a pane changes tabs.
+private final class ExplorerPaneSlotView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.masksToBounds = true
+        let minimum = widthAnchor.constraint(greaterThanOrEqualToConstant: 160)
+        minimum.priority = .defaultHigh
+        minimum.isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        for child in subviews { child.frame = bounds }
+    }
+}
+
 private final class ExplorerSplitDropHostView: NSView {
     var canAcceptTab: ((UUID, ExplorerPaneSide) -> Bool)?
     var onDropTab: ((UUID, ExplorerPaneSide) -> Void)?
+    var dividerPosition: (() -> CGFloat)?
 
     private let preview = NSView()
     private var targetedTabID: UUID?
@@ -149,7 +170,8 @@ private final class ExplorerSplitDropHostView: NSView {
         }
 
         let point = convert(info.draggingLocation, from: nil)
-        let side: ExplorerPaneSide = point.x < bounds.midX ? .left : .right
+        let divider = dividerPosition?() ?? bounds.midX
+        let side: ExplorerPaneSide = point.x < divider ? .left : .right
         guard canAcceptTab?(tabID, side) == true else {
             hideDropPreview()
             return []
@@ -160,9 +182,9 @@ private final class ExplorerSplitDropHostView: NSView {
         addSubview(preview, positioned: .above, relativeTo: nil)
         let inset: CGFloat = 8
         preview.frame = NSRect(
-            x: side == .left ? inset : bounds.midX + inset / 2,
+            x: side == .left ? inset : divider + inset / 2,
             y: inset,
-            width: max(0, bounds.width / 2 - inset * 1.5),
+            width: max(0, (side == .left ? divider : bounds.width - divider) - inset * 1.5),
             height: max(0, bounds.height - inset * 2)
         )
         preview.isHidden = false
@@ -179,6 +201,7 @@ private final class ExplorerSplitDropHostView: NSView {
 private final class ExplorerTab {
     let id: UUID
     let browser: MainViewController
+    var paneSide: ExplorerPaneSide = .left
     private var storedPaneHost: ExplorerPaneHostView?
 
     init(id: UUID = UUID(), browser: MainViewController) {
@@ -200,11 +223,16 @@ private final class ExplorerTab {
 
 final class ExplorerWindowViewController: NSViewController,
     ExplorerTabBarViewDelegate,
-    MainViewControllerDelegate {
+    MainViewControllerDelegate,
+    NSSplitViewDelegate {
 
     private let tabBar = ExplorerTabBarView()
+    private let rightTabBar = ExplorerTabBarView()
+    private let tabHeader = NSView()
     private let contentHost = ExplorerSplitDropHostView()
     private let paneSplitView = NSSplitView()
+    private let leftPaneSlot = ExplorerPaneSlotView()
+    private let rightPaneSlot = ExplorerPaneSlotView()
     private var tabs: [ExplorerTab] = []
     private var selectedIndex = 0
     private var leftTabID: UUID?
@@ -278,11 +306,17 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     override func loadView() {
-        let root = NSView()
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 1120, height: 720))
+        tabHeader.translatesAutoresizingMaskIntoConstraints = false
         tabBar.delegate = self
+        rightTabBar.delegate = self
+        tabBar.identifier = NSUserInterfaceItemIdentifier("leftPaneTabs")
+        rightTabBar.identifier = NSUserInterfaceItemIdentifier("rightPaneTabs")
         // Keep the first tab clear of the three window controls.
         tabBar.leadingInset = 82
+        rightTabBar.leadingInset = 8
+        tabHeader.addSubview(tabBar)
+        tabHeader.addSubview(rightTabBar)
 
         contentHost.translatesAutoresizingMaskIntoConstraints = false
         contentHost.canAcceptTab = { [weak self] tabID, side in
@@ -291,23 +325,29 @@ final class ExplorerWindowViewController: NSViewController,
         contentHost.onDropTab = { [weak self] tabID, side in
             self?.displayDraggedTab(tabID, on: side)
         }
+        contentHost.dividerPosition = { [weak self] in
+            guard let self, self.isCurrentTabSplit else { return self?.contentHost.bounds.midX ?? 0 }
+            return self.paneSplitView.arrangedSubviews.first?.frame.maxX ?? self.contentHost.bounds.midX
+        }
 
         paneSplitView.translatesAutoresizingMaskIntoConstraints = false
         paneSplitView.isVertical = true
         paneSplitView.dividerStyle = .thin
+        paneSplitView.delegate = self
+        paneSplitView.identifier = NSUserInterfaceItemIdentifier("browserPaneSplit")
         contentHost.addSubview(paneSplitView)
-        root.addSubview(tabBar)
+        root.addSubview(tabHeader)
         root.addSubview(contentHost)
 
-        let tabHeight = tabBar.heightAnchor.constraint(equalToConstant: 46)
-        let belowTab = contentHost.topAnchor.constraint(equalTo: tabBar.bottomAnchor)
+        let tabHeight = tabHeader.heightAnchor.constraint(equalToConstant: 46)
+        let belowTab = contentHost.topAnchor.constraint(equalTo: tabHeader.bottomAnchor)
         let belowTitlebar = contentHost.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor)
         contentBelowTabConstraint = belowTab
         contentBelowTitlebarConstraint = belowTitlebar
         NSLayoutConstraint.activate([
-            tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            tabBar.topAnchor.constraint(equalTo: root.topAnchor),
+            tabHeader.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tabHeader.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tabHeader.topAnchor.constraint(equalTo: root.topAnchor),
             tabHeight,
             contentHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             contentHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -332,8 +372,33 @@ final class ExplorerWindowViewController: NSViewController,
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        tabBar.availableWindowWidth = view.bounds.width
+        layoutTabBars()
         scheduleTrafficLightAlignment()
+    }
+
+    private func layoutTabBars() {
+        let width = tabHeader.bounds.width
+        let leftWidth = isCurrentTabSplit
+            ? (paneSplitView.arrangedSubviews.first?.frame.width ?? width / 2) : width
+        tabBar.frame = NSRect(x: 0, y: 0, width: leftWidth, height: tabHeader.bounds.height)
+        tabBar.availableWindowWidth = leftWidth
+        rightTabBar.isHidden = !isCurrentTabSplit
+        let rightX = leftWidth + paneSplitView.dividerThickness
+        rightTabBar.frame = NSRect(x: rightX, y: 0, width: max(0, width - rightX), height: tabHeader.bounds.height)
+        rightTabBar.availableWindowWidth = rightTabBar.bounds.width
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === paneSplitView else { return }
+        layoutTabBars()
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        max(proposedMinimumPosition, min(160, splitView.bounds.width / 2))
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        min(proposedMaximumPosition, max(0, splitView.bounds.width - 160 - splitView.dividerThickness))
     }
 
     func addTab(at url: URL? = nil) {
@@ -351,16 +416,23 @@ final class ExplorerWindowViewController: NSViewController,
 
         let companion = currentTab
         let reopened = addBrowser(initialLocation: closedTab.location)
+        if isCurrentTabSplit, let context = closedTab.splitContext {
+            reopened.paneSide = context.closedSide == .left ? .left : .right
+        }
         if let splitContext = closedTab.splitContext,
            !isCurrentTabSplit,
            let companion,
            companion.browser.currentLocation == splitContext.companionLocation {
             switch splitContext.closedSide {
             case .left:
+                reopened.paneSide = .left
+                companion.paneSide = .right
                 leftTabID = reopened.id
                 rightTabID = companion.id
                 activePane = .left
             case .right:
+                companion.paneSide = .left
+                reopened.paneSide = .right
                 leftTabID = companion.id
                 rightTabID = reopened.id
                 activePane = .right
@@ -374,19 +446,20 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     func selectAdjacentTab(direction: Int) {
-        guard tabs.count > 1 else { return }
-        let index = (selectedIndex + direction + tabs.count) % tabs.count
-        selectTab(tabs[index])
+        let group = tabs(on: activePane)
+        guard group.count > 1, let index = group.firstIndex(where: { $0 === currentTab }) else { return }
+        selectTab(group[(index + direction + group.count) % group.count])
     }
 
     func selectTab(at index: Int) {
-        guard tabs.indices.contains(index) else { return }
-        selectTab(tabs[index])
+        let group = tabs(on: activePane)
+        guard group.indices.contains(index) else { return }
+        selectTab(group[index])
     }
 
     func toggleTabBar() {
-        tabBar.isHidden.toggle()
-        if tabBar.isHidden {
+        tabHeader.isHidden.toggle()
+        if tabHeader.isHidden {
             contentBelowTabConstraint?.isActive = false
             contentBelowTitlebarConstraint?.isActive = true
         } else {
@@ -402,11 +475,13 @@ final class ExplorerWindowViewController: NSViewController,
             leftTabID = active.id
             rightTabID = nil
             activePane = .left
+            tabs.forEach { $0.paneSide = .left }
             showVisibleTabs()
             return
         }
 
         let duplicate = addBrowser(initialLocation: active.browser.currentLocation)
+        duplicate.paneSide = .right
         leftTabID = active.id
         rightTabID = duplicate.id
         activePane = .right
@@ -449,6 +524,7 @@ final class ExplorerWindowViewController: NSViewController,
     private func installBrowser(_ browser: MainViewController) -> ExplorerTab {
         browser.browserDelegate = self
         let tab = ExplorerTab(browser: browser)
+        tab.paneSide = isCurrentTabSplit ? activePane : .left
         tabs.append(tab)
         if browser.parent !== self { addChild(browser) }
         return tab
@@ -468,6 +544,14 @@ final class ExplorerWindowViewController: NSViewController,
         return nil
     }
 
+    private func tabs(on side: ExplorerPaneSide) -> [ExplorerTab] {
+        isCurrentTabSplit ? tabs.filter { $0.paneSide == side } : (side == .left ? tabs : [])
+    }
+
+    private func side(for bar: ExplorerTabBarView) -> ExplorerPaneSide {
+        bar === rightTabBar ? .right : .left
+    }
+
     private func activateTab(_ tab: ExplorerTab, updateInterface: Bool) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         selectedIndex = index
@@ -483,14 +567,14 @@ final class ExplorerWindowViewController: NSViewController,
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         selectedIndex = index
         if isCurrentTabSplit {
-            if let visibleSide = side(for: tab) {
-                activePane = visibleSide
-            } else if activePane == .left {
+            activePane = tab.paneSide
+            if activePane == .left {
                 leftTabID = tab.id
             } else {
                 rightTabID = tab.id
             }
         } else {
+            tab.paneSide = .left
             leftTabID = tab.id
             activePane = .left
         }
@@ -507,38 +591,51 @@ final class ExplorerWindowViewController: NSViewController,
             return
         }
 
-        let previouslyActiveID = currentTab?.id
-        let wasLeft = leftTabID == removedTab.id
-        let wasRight = rightTabID == removedTab.id
-        let survivingVisibleID: UUID? = wasLeft ? rightTabID : (wasRight ? leftTabID : nil)
         discard(tab: removedTab)
-        tabs.remove(at: index)
-
-        if let survivingVisibleID, tab(withID: survivingVisibleID) != nil {
-            leftTabID = survivingVisibleID
-            rightTabID = nil
-            activePane = .left
-            selectedIndex = tabs.firstIndex(where: { $0.id == survivingVisibleID }) ?? 0
-        } else {
-            if let previouslyActiveID,
-               let activeIndex = tabs.firstIndex(where: { $0.id == previouslyActiveID }) {
-                selectedIndex = activeIndex
-            } else {
-                selectedIndex = min(index, tabs.count - 1)
-            }
-            if !isCurrentTabSplit { leftTabID = currentTab?.id }
-        }
+        removeTabFromModel(at: index)
         showVisibleTabs()
+    }
+
+    private func removeTabFromModel(at index: Int) {
+        let removed = tabs[index]
+        let wasSplit = isCurrentTabSplit
+        let wasVisible = side(for: removed) != nil
+        let activeID = currentTab?.id
+        tabs.remove(at: index)
+        guard !tabs.isEmpty else {
+            selectedIndex = 0
+            leftTabID = nil
+            rightTabID = nil
+            return
+        }
+        var nextActiveID = activeID == removed.id ? nil : activeID
+        if wasSplit && wasVisible {
+            if let replacement = tabs.first(where: { $0.paneSide == removed.paneSide }) {
+                if removed.paneSide == .left { leftTabID = replacement.id }
+                else { rightTabID = replacement.id }
+                if nextActiveID == nil { nextActiveID = replacement.id }
+            } else {
+                let survivorID = removed.paneSide == .left ? rightTabID : leftTabID
+                leftTabID = survivorID
+                rightTabID = nil
+                activePane = .left
+                tabs.forEach { $0.paneSide = .left }
+                nextActiveID = survivorID
+            }
+        }
+        selectedIndex = nextActiveID.flatMap { id in tabs.firstIndex { $0.id == id } } ?? min(index, tabs.count - 1)
+        if rightTabID == nil { leftTabID = currentTab?.id }
+        activePane = currentTab?.paneSide ?? .left
     }
 
     private func closedTabSnapshot(for tab: ExplorerTab) -> ClosedExplorerTab {
         let splitContext: ClosedExplorerSplitContext?
-        if leftTabID == tab.id, let rightTab {
+        if tab.paneSide == .left, let rightTab {
             splitContext = ClosedExplorerSplitContext(
                 closedSide: .left,
                 companionLocation: rightTab.browser.currentLocation
             )
-        } else if rightTabID == tab.id, let leftTab {
+        } else if isCurrentTabSplit, tab.paneSide == .right, let leftTab {
             splitContext = ClosedExplorerSplitContext(
                 closedSide: .right,
                 companionLocation: leftTab.browser.currentLocation
@@ -571,10 +668,13 @@ final class ExplorerWindowViewController: NSViewController,
                 paneSplitView.setPosition(paneSplitView.bounds.width / 2, ofDividerAt: 0)
             }
         }
+        layoutTabBars()
+        active.browser.focusBrowserContent()
     }
 
     private func normalizeVisibleTabs(around active: ExplorerTab) {
         if rightTabID == nil {
+            tabs.forEach { $0.paneSide = .left }
             leftTabID = active.id
             activePane = .left
             return
@@ -587,28 +687,31 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     private func mountVisibleTabs() {
-        let desiredHosts = visibleTabs.map(\.paneHost)
+        let slots = isCurrentTabSplit ? [leftPaneSlot, rightPaneSlot] : [leftPaneSlot]
         let visibleTabIDs = Set(visibleTabs.map(\.id))
         for tab in tabs {
             tab.browser.setBrowserPaneVisible(visibleTabIDs.contains(tab.id))
         }
-        let mountedHosts = paneSplitView.arrangedSubviews
-        if desiredHosts.count == mountedHosts.count,
-           !zip(desiredHosts, mountedHosts).contains(where: { $0.0 !== $0.1 }) {
-            return
+        for slot in paneSplitView.arrangedSubviews where !slots.contains(where: { $0 === slot }) {
+            slot.subviews.forEach { $0.removeFromSuperview() }
+            paneSplitView.removeArrangedSubview(slot)
+            slot.removeFromSuperview()
         }
-
-        mountedHosts.forEach { host in
-            paneSplitView.removeArrangedSubview(host)
-            host.removeFromSuperview()
-        }
-        visibleTabs.forEach { tab in
+        for (tab, slot) in zip(visibleTabs, slots) {
+            if slot.superview !== paneSplitView { paneSplitView.addArrangedSubview(slot) }
             if tab.browser.parent !== self { addChild(tab.browser) }
             tab.paneHost.onActivate = { [weak self, weak tab] in
                 guard let self, let tab else { return }
                 self.activateTab(tab, updateInterface: true)
             }
-            paneSplitView.addArrangedSubview(tab.paneHost)
+            let host = tab.paneHost
+            if host.superview !== slot {
+                slot.subviews.forEach { $0.removeFromSuperview() }
+                host.translatesAutoresizingMaskIntoConstraints = true
+                host.autoresizingMask = [.width, .height]
+                slot.addSubview(host)
+                host.frame = slot.bounds
+            }
         }
         if isCurrentTabSplit {
             paneSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
@@ -652,7 +755,7 @@ final class ExplorerWindowViewController: NSViewController,
     private func alignTrafficLights() {
         guard let window = view.window else { return }
         let kinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
-        if tabBar.isHidden {
+        if tabHeader.isHidden {
             removeCustomTrafficLightButtons()
             kinds.forEach { window.standardWindowButton($0)?.isHidden = false }
             return
@@ -723,17 +826,19 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     private func updateTabs() {
-        tabBar.update(
-            items: tabs.map {
-                ExplorerTabBarItem(
-                    id: $0.id,
-                    title: $0.browser.locationTitle,
-                    locationDescription: $0.browser.currentLocation.addressDescription
-                )
-            },
-            activeTabID: currentTab?.id,
-            visibleTabIDs: Set(visibleTabs.map(\.id))
-        )
+        for (side, bar) in [(ExplorerPaneSide.left, tabBar), (.right, rightTabBar)] {
+            bar.update(
+                items: tabs(on: side).map {
+                    ExplorerTabBarItem(
+                        id: $0.id,
+                        title: $0.browser.locationTitle,
+                        locationDescription: $0.browser.currentLocation.addressDescription
+                    )
+                },
+                activeTabID: currentTab?.id,
+                visibleTabIDs: Set(visibleTabs.map(\.id))
+            )
+        }
     }
 
     private func canDisplayTab(_ tabID: UUID, on side: ExplorerPaneSide) -> Bool {
@@ -764,24 +869,19 @@ final class ExplorerWindowViewController: NSViewController,
         }
 
         if isCurrentTabSplit {
-            let oldLeft = leftTabID
-            let oldRight = rightTabID
-            if side == .left {
-                leftTabID = movingTab.id
-                if oldRight == movingTab.id { rightTabID = oldLeft }
-            } else {
-                rightTabID = movingTab.id
-                if oldLeft == movingTab.id { leftTabID = oldRight }
-            }
+            assign(movingTab, to: side)
         } else if let active = currentTab {
             if movingTab.id == active.id {
                 guard let companion = tabs.first(where: { $0.id != movingTab.id }) else { return }
                 leftTabID = side == .left ? movingTab.id : companion.id
                 rightTabID = side == .right ? movingTab.id : companion.id
+                companion.paneSide = side == .left ? .right : .left
             } else {
                 leftTabID = side == .left ? movingTab.id : active.id
                 rightTabID = side == .right ? movingTab.id : active.id
+                active.paneSide = side == .left ? .right : .left
             }
+            movingTab.paneSide = side
         }
 
         activePane = side
@@ -790,7 +890,8 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     private func sourceController(containing tabID: UUID) -> ExplorerWindowViewController? {
-        NSApp.windows.compactMap {
+        if tabs.contains(where: { $0.id == tabID }) { return self }
+        return NSApp.windows.compactMap {
             $0.contentViewController as? ExplorerWindowViewController
         }.first { controller in
             controller.tabs.contains { $0.id == tabID }
@@ -798,35 +899,68 @@ final class ExplorerWindowViewController: NSViewController,
     }
 
     func tabBar(_ tabBar: ExplorerTabBarView, didSelect index: Int) {
-        guard tabs.indices.contains(index) else { return }
-        selectTab(tabs[index])
+        let group = tabs(on: side(for: tabBar))
+        guard group.indices.contains(index) else { return }
+        selectTab(group[index])
     }
 
     func tabBar(_ tabBar: ExplorerTabBarView, didRequestClose index: Int) {
-        closeTab(at: index)
+        let group = tabs(on: side(for: tabBar))
+        guard group.indices.contains(index), let globalIndex = tabs.firstIndex(where: { $0 === group[index] }) else { return }
+        closeTab(at: globalIndex)
+    }
+
+    private func assign(_ movingTab: ExplorerTab, to destinationSide: ExplorerPaneSide) {
+        // Keep both panes usable when the last visible tab crosses sides: swap
+        // with the destination's visible tab if the source has no replacement.
+        if let sourceSide = side(for: movingTab), sourceSide != destinationSide {
+            let replacement = tabs.first { $0 !== movingTab && $0.paneSide == sourceSide }
+                ?? (destinationSide == .left ? leftTab : rightTab)
+            replacement?.paneSide = sourceSide
+            if sourceSide == .left { leftTabID = replacement?.id }
+            else { rightTabID = replacement?.id }
+        }
+        movingTab.paneSide = destinationSide
+        if destinationSide == .left { leftTabID = movingTab.id }
+        else { rightTabID = movingTab.id }
     }
 
     func tabBar(_ tabBar: ExplorerTabBarView, didRequestMove tabID: UUID, to insertionIndex: Int) {
         guard let source = sourceController(containing: tabID) else { return }
+        let destinationSide = side(for: tabBar)
+        let destinationGroup = tabs(on: destinationSide)
+        var groupIndex = min(max(0, insertionIndex), destinationGroup.count)
+        if let oldIndex = destinationGroup.firstIndex(where: { $0.id == tabID }), oldIndex < groupIndex {
+            groupIndex -= 1
+        }
+        let remainingGroup = destinationGroup.filter { $0.id != tabID }
         if source === self {
             guard let sourceIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return }
             let activeID = currentTab?.id
-            let movingTab = tabs.remove(at: sourceIndex)
-            var targetIndex = min(max(0, insertionIndex), tabs.count + 1)
-            if sourceIndex < targetIndex { targetIndex -= 1 }
-            targetIndex = min(max(0, targetIndex), tabs.count)
+            let movingTab = tabs[sourceIndex]
+            let changesPane = isCurrentTabSplit && movingTab.paneSide != destinationSide
+            if changesPane { assign(movingTab, to: destinationSide) }
+            tabs.remove(at: sourceIndex)
+            let targetIndex = insertionIndexInAllTabs(group: remainingGroup, index: groupIndex)
             tabs.insert(movingTab, at: targetIndex)
             if let activeID { selectedIndex = tabs.firstIndex(where: { $0.id == activeID }) ?? targetIndex }
-            updateTabs()
+            if changesPane { selectTab(movingTab) } else { updateTabs() }
             return
         }
 
         guard let movingTab = source.removeTabForTransfer(tabID: tabID) else { return }
         movingTab.browser.browserDelegate = self
         if movingTab.browser.parent !== self { addChild(movingTab.browser) }
-        let targetIndex = min(max(0, insertionIndex), tabs.count)
+        movingTab.paneSide = destinationSide
+        let targetIndex = insertionIndexInAllTabs(group: remainingGroup, index: groupIndex)
         tabs.insert(movingTab, at: targetIndex)
         selectTab(movingTab)
+    }
+
+    private func insertionIndexInAllTabs(group: [ExplorerTab], index: Int) -> Int {
+        if group.indices.contains(index), let next = tabs.firstIndex(where: { $0 === group[index] }) { return next }
+        if let last = group.last, let previous = tabs.firstIndex(where: { $0 === last }) { return previous + 1 }
+        return tabs.count
     }
 
     func tabBar(
@@ -850,13 +984,9 @@ final class ExplorerWindowViewController: NSViewController,
     private func removeTabForTransfer(tabID: UUID) -> ExplorerTab? {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return nil }
         let removedTab = tabs[index]
-        let wasLeft = leftTabID == tabID
-        let wasRight = rightTabID == tabID
-        let survivorID: UUID? = wasLeft ? rightTabID : (wasRight ? leftTabID : currentTab?.id)
-
         removedTab.removePaneHostFromHierarchy()
         removedTab.browser.removeFromParent()
-        tabs.remove(at: index)
+        removeTabFromModel(at: index)
 
         if tabs.isEmpty {
             selectedIndex = 0
@@ -866,21 +996,13 @@ final class ExplorerWindowViewController: NSViewController,
             let sourceWindow = view.window
             DispatchQueue.main.async { sourceWindow?.performClose(nil) }
         } else {
-            let fallbackID = survivorID.flatMap { tab(withID: $0)?.id } ?? tabs[min(index, tabs.count - 1)].id
-            selectedIndex = tabs.firstIndex(where: { $0.id == fallbackID }) ?? 0
-            if wasLeft || wasRight {
-                leftTabID = fallbackID
-                rightTabID = nil
-                activePane = .left
-            } else if !isCurrentTabSplit {
-                leftTabID = fallbackID
-            }
             showVisibleTabs()
         }
         return removedTab
     }
 
     func tabBarDidRequestNewTab(_ tabBar: ExplorerTabBarView) {
+        activePane = side(for: tabBar)
         addTab()
     }
 

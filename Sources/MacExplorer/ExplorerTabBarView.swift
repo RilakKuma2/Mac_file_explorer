@@ -167,6 +167,8 @@ final class ExplorerTabBarView: NSView {
         tabScrollView.scrollerStyle = .overlay
         tabScrollView.horizontalScrollElasticity = .automatic
         tabScrollView.verticalScrollElasticity = .none
+        tabScrollView.clipsToBounds = true
+        tabScrollView.contentView.clipsToBounds = true
         addSubview(tabScrollView)
 
         tabStack.orientation = .horizontal
@@ -196,9 +198,11 @@ final class ExplorerTabBarView: NSView {
         addSubview(bottomLine)
 
         tabScrollLeadingConstraint = tabScrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: leadingInset)
-        tabScrollLeadingConstraint?.priority = .init(999)
+        // Keep window controls clear even during the first narrow-layout pass.
+        // The preferred viewport width, not the leading inset, must yield.
+        tabScrollLeadingConstraint?.priority = .required
         tabScrollWidthConstraint = tabScrollView.widthAnchor.constraint(equalToConstant: 300)
-        tabScrollWidthConstraint?.priority = .init(999)
+        tabScrollWidthConstraint?.priority = .defaultHigh
         NSLayoutConstraint.activate([
             tabScrollLeadingConstraint!,
             tabScrollWidthConstraint!,
@@ -350,6 +354,7 @@ final class ExplorerTabBarView: NSView {
             button.focusRingType = .default
             button.tabIndex = index
             button.tabID = item.id
+            button.identifier = NSUserInterfaceItemIdentifier(item.id.uuidString)
             button.isSelectedTab = isActive
             button.state = isActive ? .on : .off
             button.setAccessibilityRole(.radioButton)

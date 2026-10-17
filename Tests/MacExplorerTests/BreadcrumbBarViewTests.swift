@@ -4,6 +4,21 @@ import Testing
 
 @Suite("BreadcrumbBarView")
 struct BreadcrumbBarViewTests {
+    @Test("Narrow paths retain readable recent components and restore ancestors when widened")
+    @MainActor
+    func narrowPathComponents() throws {
+        let bar = BreadcrumbBarView(frame: NSRect(x: 0, y: 0, width: 200, height: 32))
+        bar.show(url: URL(fileURLWithPath: "/Volumes/Test/Parent/Current"))
+        bar.layoutSubtreeIfNeeded()
+        let crumbs = allSubviews(of: bar).compactMap { $0 as? NSButton }.filter {
+            $0.identifier?.rawValue == "breadcrumbCrumb" && $0.tag >= 0
+        }
+        #expect(crumbs.filter { !$0.isHidden }.map(\.title) == ["Current"])
+        bar.setFrameSize(NSSize(width: 700, height: 32))
+        bar.layoutSubtreeIfNeeded()
+        #expect(crumbs.allSatisfy { !$0.isHidden })
+    }
+
     @Test("Address text enables Copy without a selected file")
     @MainActor
     func addressCopyValidation() throws {

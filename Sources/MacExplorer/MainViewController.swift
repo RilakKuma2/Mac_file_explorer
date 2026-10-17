@@ -241,6 +241,9 @@ final class MainViewController: NSViewController,
     private var tagQuery: NSMetadataQuery?
     private var tagQueryObservers: [NSObjectProtocol] = []
     private var sidebarWidthInitialized = false
+    private var sidebarRequestedVisible = true
+    private var sidebarContainerWidth: CGFloat = 0
+    private var isRestoringSidebarWidth = false
     private var isNetworkViewMounted = false
     private var lastCutPasteboardChangeCount = -1
     private var fileUndoActions: [ExplorerFileUndoAction] = []
@@ -394,6 +397,7 @@ final class MainViewController: NSViewController,
         mainSplit.isVertical = true
         mainSplit.dividerStyle = .thin
         mainSplit.delegate = self
+        mainSplit.identifier = NSUserInterfaceItemIdentifier("browserSidebarSplit")
         rootStack.addArrangedSubview(mainSplit)
 
         addChild(sidebarController)
@@ -403,7 +407,12 @@ final class MainViewController: NSViewController,
         sidebarController.view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         mainSplit.addArrangedSubview(sidebarController.view)
         mainSplit.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        sidebarController.view.isHidden = desktopPresentation
+        sidebarController.view.identifier = NSUserInterfaceItemIdentifier("browserSidebar")
+        sidebarController.view.isHidden = desktopPresentation || !sidebarRequestedVisible
+        if sidebarController.view.isHidden {
+            mainSplit.removeArrangedSubview(sidebarController.view)
+            sidebarController.view.removeFromSuperview()
+        }
 
         let browserPane = NSStackView()
         browserPane.translatesAutoresizingMaskIntoConstraints = false
@@ -556,6 +565,13 @@ final class MainViewController: NSViewController,
     override func viewDidLayout() {
         super.viewDidLayout()
         guard !desktopPresentation else { return }
+        if mainSplit.bounds.width > 0 {
+            initializeSidebarWidthIfNeeded()
+            if abs(sidebarContainerWidth - mainSplit.bounds.width) > 0.5 {
+                sidebarContainerWidth = mainSplit.bounds.width
+                restoreSidebarWidth()
+            }
+        }
         let width = view.bounds.width
         forwardButton.isHidden = width < 250
         upButton.isHidden = width < 310
@@ -1985,6 +2001,12 @@ final class MainViewController: NSViewController,
         splitButton.toolTip = L10n.text(isSplit ? "Close Split View" : "Split View")
     }
 
+    func focusBrowserContent() {
+        guard isViewLoaded else { return }
+        if displaysFileItems { fileListController.focus() }
+        else { view.window?.makeFirstResponder(view) }
+    }
+
     @objc private func selectSortKey(_ sender: NSMenuItem) {
         guard let key = FileSortKey(rawValue: sender.tag) else { return }
         fileListController.setSort(key: key)
@@ -2116,31 +2138,42 @@ final class MainViewController: NSViewController,
         if let container = view.window?.contentViewController as? ExplorerWindowViewController {
             container.toggleSidebarVisibility()
         } else {
-            sidebarController.view.isHidden.toggle()
+            setSidebarVisible(sidebarController.view.superview !== mainSplit)
         }
     }
 
     func setSidebarVisible(_ visible: Bool) {
-        sidebarController.view.isHidden = !visible
-        if visible {
+        sidebarRequestedVisible = visible
+        guard isViewLoaded else { return }
+        let sidebar = sidebarController.view
+        if visible && sidebar.superview !== mainSplit {
+            sidebar.isHidden = false
+            mainSplit.insertArrangedSubview(sidebar, at: 0)
+            mainSplit.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
             DispatchQueue.main.async { [weak self] in
                 self?.restoreSidebarWidth()
             }
+        } else if !visible && sidebar.superview === mainSplit {
+            mainSplit.removeArrangedSubview(sidebar)
+            sidebar.removeFromSuperview()
+            sidebar.isHidden = true
         }
     }
 
     private func initializeSidebarWidthIfNeeded() {
-        guard !sidebarWidthInitialized else { return }
+        guard !sidebarWidthInitialized, mainSplit.bounds.width > 0 else { return }
         sidebarWidthInitialized = true
         restoreSidebarWidth()
     }
 
     private func restoreSidebarWidth() {
         guard !sidebarController.view.isHidden, mainSplit.arrangedSubviews.count > 1 else { return }
+        isRestoringSidebarWidth = true
+        defer { isRestoringSidebarWidth = false }
         let savedWidth = UserDefaults.standard.object(forKey: Self.sidebarWidthKey) as? Double
         let desiredWidth = CGFloat(savedWidth ?? 210)
-        let maximum = max(110, min(360, mainSplit.bounds.width - 140))
-        mainSplit.setPosition(min(max(desiredWidth, 110), maximum), ofDividerAt: 0)
+        let maximum = max(80, mainSplit.bounds.width - 80)
+        mainSplit.setPosition(min(max(desiredWidth, 80), maximum), ofDividerAt: 0)
     }
 
     func splitView(
@@ -2148,8 +2181,8 @@ final class MainViewController: NSViewController,
         constrainMinCoordinate proposedMinimumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        guard splitView === mainSplit, dividerIndex == 0 else { return proposedMinimumPosition }
-        return max(proposedMinimumPosition, 110)
+        guard splitView === mainSplit, dividerIndex == 0, mainSplit.arrangedSubviews.count > 1 else { return proposedMinimumPosition }
+        return max(proposedMinimumPosition, 80)
     }
 
     func splitView(
@@ -2157,8 +2190,8 @@ final class MainViewController: NSViewController,
         constrainMaxCoordinate proposedMaximumPosition: CGFloat,
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
-        guard splitView === mainSplit, dividerIndex == 0 else { return proposedMaximumPosition }
-        let maximum = max(110, min(360, splitView.bounds.width - 140))
+        guard splitView === mainSplit, dividerIndex == 0, mainSplit.arrangedSubviews.count > 1 else { return proposedMaximumPosition }
+        let maximum = max(80, splitView.bounds.width - 80)
         return min(proposedMaximumPosition, maximum)
     }
 
@@ -2171,6 +2204,7 @@ final class MainViewController: NSViewController,
         guard let resizedSplitView = notification.object as? NSSplitView,
               resizedSplitView === mainSplit,
               sidebarWidthInitialized,
+              !isRestoringSidebarWidth,
               !sidebarController.view.isHidden else { return }
         UserDefaults.standard.set(Double(sidebarController.view.frame.width), forKey: Self.sidebarWidthKey)
     }
@@ -3582,6 +3616,16 @@ final class MainViewController: NSViewController,
 
     func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, didSelect url: URL) { navigate(to: url) }
 
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, validateDrop info: NSDraggingInfo, into directory: URL) -> NSDragOperation {
+        guard !isPerformingStandaloneMutation, !isPerformingFileUndo else { return [] }
+        return fileListController.fileDropDecision(for: info, target: .folder(directory, isPackage: false))?.decision.operation ?? []
+    }
+
+    func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, acceptDrop info: NSDraggingInfo, into directory: URL) -> Bool {
+        guard !isPerformingStandaloneMutation, !isPerformingFileUndo else { return false }
+        return fileListController.acceptFileDrop(info, target: .folder(directory, isPackage: false))
+    }
+
     func breadcrumbBar(_ breadcrumbBar: BreadcrumbBarView, didSubmitPath path: String) {
         let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedPath = trimmedPath.lowercased()
@@ -3843,7 +3887,13 @@ final class MainViewController: NSViewController,
     func fileListDidRequestQuickLook(_ fileList: FileListViewController) { quickLook(nil) }
 
     func fileList(_ fileList: FileListViewController, didRequestImport urls: [URL], destination: URL, move: Bool) {
-        startTransfer(kind: move ? .move : .copy, urls: urls, destination: destination)
+        // Return to AppKit before conflict sheets or file operations start. Do
+        // not nest a sheet or synchronous filesystem preflight in drag tracking.
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            guard let self else { return }
+            FileDragDiagnostics.logger.notice("File drop dispatched: count=\(urls.count) move=\(move)")
+            self.startTransfer(kind: move ? .move : .copy, urls: urls, destination: destination)
+        }
     }
 
     override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
