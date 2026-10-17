@@ -5,6 +5,11 @@ struct FinderSidebarEntry: Hashable {
     let title: String
     let url: URL
     let symbolName: String
+    var canEject = false
+
+    static func canEjectVolume(at url: URL, removable: Bool, ejectable: Bool, local: Bool?) -> Bool {
+        url.isFileURL && url.standardizedFileURL.path != "/" && (removable || ejectable || local == false)
+    }
 }
 
 final class FinderSidebarProvider {
@@ -79,6 +84,7 @@ final class FinderSidebarProvider {
             .volumeIsBrowsableKey,
             .volumeIsRemovableKey,
             .volumeIsEjectableKey,
+            .volumeIsLocalKey,
             .volumeIsInternalKey
         ]
         let volumes = manager.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
@@ -91,7 +97,10 @@ final class FinderSidebarProvider {
             return FinderSidebarEntry(
                 title: values?.volumeLocalizedName ?? manager.displayName(atPath: volume.path),
                 url: volume,
-                symbolName: symbol
+                symbolName: symbol,
+                canEject: FinderSidebarEntry.canEjectVolume(at: volume,
+                    removable: values?.volumeIsRemovable == true,
+                    ejectable: values?.volumeIsEjectable == true, local: values?.volumeIsLocal)
             )
         })
 

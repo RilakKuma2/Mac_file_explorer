@@ -14,6 +14,7 @@ final class SidebarNode: NSObject {
     let isPinned: Bool
     let isCustomPinned: Bool
     let isInitiallyExpanded: Bool
+    let canEject: Bool
 
     init(
         title: String,
@@ -24,9 +25,11 @@ final class SidebarNode: NSObject {
         isGroup: Bool = false,
         isPinned: Bool = false,
         isCustomPinned: Bool = false,
-        isInitiallyExpanded: Bool = true
+        isInitiallyExpanded: Bool = true,
+        canEject: Bool = false
     ) {
         self.title = title
+        self.canEject = canEject
         self.symbolName = symbolName
         self.icon = icon
         self.location = location
@@ -236,14 +239,26 @@ private final class SidebarRefreshCoordinator {
     }
 }
 
+private final class SidebarEjectButton: NSButton {
+    var volumeURL: URL?
+}
+
 private final class SidebarCellView: NSTableCellView {
     let pinImageView = NSImageView()
+    let ejectButton = SidebarEjectButton()
+    var labelToEjectConstraint: NSLayoutConstraint?
     var labelToPinConstraint: NSLayoutConstraint?
     var labelToEdgeConstraint: NSLayoutConstraint?
 
-    func setPinned(_ pinned: Bool) {
-        pinImageView.isHidden = !pinned
-        if pinned {
+    func setPinned(_ pinned: Bool, ejectable: Bool) {
+        pinImageView.isHidden = !pinned || ejectable
+        ejectButton.isHidden = !ejectable
+        labelToEjectConstraint?.isActive = false
+        if ejectable {
+            labelToEdgeConstraint?.isActive = false
+            labelToPinConstraint?.isActive = false
+            labelToEjectConstraint?.isActive = true
+        } else if pinned {
             labelToEdgeConstraint?.isActive = false
             labelToPinConstraint?.isActive = true
         } else {
@@ -275,6 +290,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private var suppressSelectionCallback = false
     private var favoritesRootNode: SidebarNode?
     private var isRegisteredForSidebarRefresh = false
+    private var ejectingVolumes = Set<URL>()
 
     override func loadView() {
         let scrollView = NSScrollView()
@@ -380,7 +396,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                     symbolName: entry.symbolName,
                     icon: sidebarIcon(for: entry.url),
                     location: .folder(entry.url),
-                    isPinned: pinned
+                    isPinned: pinned,
+                    canEject: entry.canEject
                 )
             }
         }
@@ -547,7 +564,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         cell.imageView?.contentTintColor = node.icon == nil
             ? (node.isGroup ? .secondaryLabelColor : .controlAccentColor)
             : nil
-        (cell as? SidebarCellView)?.setPinned(node.isPinned)
+        if let cell = cell as? SidebarCellView {
+            cell.setPinned(node.isPinned, ejectable: node.canEject)
+            cell.ejectButton.volumeURL = node.canEject ? node.location?.folderURL : nil
+            cell.ejectButton.isEnabled = cell.ejectButton.volumeURL.map { !ejectingVolumes.contains($0) } ?? false
+            cell.ejectButton.toolTip = "\(L10n.text("Eject")) — \(node.title)"
+            cell.ejectButton.setAccessibilityLabel(cell.ejectButton.toolTip)
+        }
         return cell
     }
 
@@ -585,6 +608,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         pin.setAccessibilityElement(false)
         cell.addSubview(pin)
 
+        let eject = cell.ejectButton
+        eject.translatesAutoresizingMaskIntoConstraints = false
+        eject.image = NSImage(systemSymbolName: "eject.fill", accessibilityDescription: L10n.text("Eject"))
+        eject.isBordered = false
+        eject.contentTintColor = .secondaryLabelColor
+        eject.target = self
+        eject.action = #selector(ejectVolumeButton(_:))
+        cell.addSubview(eject)
+        cell.labelToEjectConstraint = label.trailingAnchor.constraint(lessThanOrEqualTo: eject.leadingAnchor, constant: -5)
+
         let labelToPin = label.trailingAnchor.constraint(lessThanOrEqualTo: pin.leadingAnchor, constant: -5)
         let labelToEdge = label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -6)
         cell.labelToPinConstraint = labelToPin
@@ -592,6 +625,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         labelToEdge.isActive = true
 
         NSLayoutConstraint.activate([
+            eject.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -5),
+            eject.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            eject.widthAnchor.constraint(equalToConstant: 24),
+            eject.heightAnchor.constraint(equalToConstant: 24),
             imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
             imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             imageView.widthAnchor.constraint(equalToConstant: group ? 0 : 18),
@@ -620,8 +657,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let row = outlineView.clickedRow
         guard row >= 0,
               let node = outlineView.item(atRow: row) as? SidebarNode,
-              node.isCustomPinned,
               let url = node.location?.folderURL else { return }
+        if node.canEject {
+            let item = NSMenuItem(title: L10n.text("Eject"), action: #selector(ejectVolumeMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            item.image = NSImage(systemSymbolName: "eject", accessibilityDescription: nil)
+            item.isEnabled = !ejectingVolumes.contains(url)
+            menu.addItem(item)
+        }
+        guard node.isCustomPinned else { return }
         let item = NSMenuItem(
             title: L10n.text("Unpin from Quick access"),
             action: #selector(unpinFolder(_:)),
@@ -637,5 +682,40 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     @objc private func unpinFolder(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         ExplorerPreferences.unpinFolder(url)
+    }
+
+    @objc private func ejectVolumeButton(_ sender: SidebarEjectButton) {
+        guard let url = sender.volumeURL else { return }
+        ejectVolume(url)
+    }
+
+    @objc private func ejectVolumeMenu(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        ejectVolume(url)
+    }
+
+    private func ejectVolume(_ url: URL) {
+        guard url.isFileURL, url.standardizedFileURL.path != "/",
+              ejectingVolumes.insert(url).inserted else { return }
+        outlineView.reloadData()
+        // The system may wait for open files. Never block AppKit or force eject.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let error: Error?
+            do {
+                try NSWorkspace.shared.unmountAndEjectDevice(at: url)
+                error = nil
+            } catch let failure { error = failure }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.ejectingVolumes.remove(url)
+                self.outlineView.reloadData()
+                if let error {
+                    let alert = NSAlert(error: error)
+                    if let window = self.view.window { alert.beginSheetModal(for: window) }
+                    else { alert.runModal() }
+                }
+                // didUnmountNotification refreshes the shared sidebar snapshot.
+            }
+        }
     }
 }
