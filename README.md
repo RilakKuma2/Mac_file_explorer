@@ -14,6 +14,10 @@ Windows 탐색기에 익숙한 사용자를 위한 네이티브 macOS 파일 탐
 
 ## 미리 보기
 
+### 두쪽 보기와 사이드바
+
+![패널별 탭과 왼쪽 사이드바를 사용하는 두쪽 보기](docs/screenshots/split-view.png)
+
 ### 목록과 날짜 그룹
 
 ![날짜별 파일 목록](docs/screenshots/list.png)
