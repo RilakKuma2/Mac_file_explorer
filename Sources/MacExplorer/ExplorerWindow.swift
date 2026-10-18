@@ -54,6 +54,10 @@ final class ExplorerWindow: NSWindow {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        if attachedSheet == nil,
+           (contentViewController as? ExplorerWindowViewController)?.handlePaneMouseDown(event) == true {
+            return
+        }
         if event.type == .leftMouseDown,
            event.clickCount == 1,
            styleMask.contains(.resizable),

@@ -351,9 +351,10 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     /// Routes a window-level mouse-down to the exact breadcrumb action. This is
     /// used by the browser window so the address controls remain clickable even
     /// when a split-view or titlebar tracking view overlaps AppKit's hit testing.
-    func handleMouseDown(atWindowPoint windowPoint: NSPoint) -> Bool {
-        guard editField.isHidden,
-              !isHidden,
+    func handleMouseDown(_ event: NSEvent) -> Bool {
+        let windowPoint = event.locationInWindow
+        guard event.type == .leftMouseDown, event.window === window,
+              editField.isHidden, !isHiddenOrHasHiddenAncestor,
               bounds.contains(convert(windowPoint, from: nil)) else { return false }
 
         for case let button as NSButton in stack.arrangedSubviews {
@@ -361,10 +362,11 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
             guard !button.isHiddenOrHasHiddenAncestor,
                   identifier == "breadcrumbCrumb" || identifier == "breadcrumbChevron" else { continue }
             if button.bounds.contains(button.convert(windowPoint, from: nil)) {
-                NavigationClickDispatcher.enqueue(button)
+                NavigationClickDispatcher.mouseDown(on: button, with: event)
                 return true
             }
         }
+        if let window, !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
         beginEditing()
         return true
     }
@@ -634,9 +636,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
                 )
             }
             guard !token.isCancelled else { return }
-            // The popup can be tracking inside NavigationClickDispatcher's
-            // main-queue block. Another main-queue block cannot run until that
-            // popup closes. Deliver through its nested tracking run loop.
+            // Deliver even while AppKit is tracking the open popup.
             RunLoop.main.perform(inModes: [.common, .eventTracking]) { [weak self] in
                 self?.finishChildDirectoryLoad(result, requestID: requestID, token: token)
             }

@@ -238,7 +238,6 @@ final class ExplorerWindowViewController: NSViewController,
     private var leftTabID: UUID?
     private var rightTabID: UUID?
     private var activePane: ExplorerPaneSide = .left
-    private var paneClickMonitor: Any?
     private var contentBelowTabConstraint: NSLayoutConstraint?
     private var contentBelowTitlebarConstraint: NSLayoutConstraint?
     private var sidebarVisible = true
@@ -299,10 +298,6 @@ final class ExplorerWindowViewController: NSViewController,
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        if let paneClickMonitor { NSEvent.removeMonitor(paneClickMonitor) }
     }
 
     override func loadView() {
@@ -366,7 +361,6 @@ final class ExplorerWindowViewController: NSViewController,
         super.viewDidAppear()
         view.window?.title = currentBrowser?.locationTitle ?? "Mac Explorer"
         updateWindowMinimumSize()
-        installPaneClickMonitorIfNeeded()
         scheduleTrafficLightAlignment()
     }
 
@@ -799,30 +793,28 @@ final class ExplorerWindowViewController: NSViewController,
         customTrafficLightButtons.removeAll(keepingCapacity: true)
     }
 
-    private func installPaneClickMonitorIfNeeded() {
-        guard paneClickMonitor == nil else { return }
-        paneClickMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-        ) { [weak self] event in
-            guard let self, event.window === self.view.window else { return event }
-            guard let tab = self.visibleTabs.first(where: {
-                !$0.browser.view.isHidden && $0.browser.view.bounds.contains(
-                    $0.browser.view.convert(event.locationInWindow, from: nil)
-                )
-            }) else { return event }
+    /// Run at window dispatch, after AppKit's event monitors and menu routing.
+    /// A monitor that consumes just mouse-down leaves native controls with an
+    /// unmatched mouse-up and can start navigation inside another tracking loop.
+    func handlePaneMouseDown(_ event: NSEvent) -> Bool {
+        guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+              event.window === view.window,
+              let tab = visibleTabs.first(where: {
+                  !$0.browser.view.isHiddenOrHasHiddenAncestor && $0.browser.view.bounds.contains(
+                      $0.browser.view.convert(event.locationInWindow, from: nil)
+                  )
+              }) else { return false }
 
-            if tab.id != self.currentTab?.id {
-                self.activateTab(tab, updateInterface: false)
-                DispatchQueue.main.async { [weak self, weak tab] in
-                    guard let self, let tab, self.visibleTabs.contains(where: { $0 === tab }) else { return }
-                    self.view.window?.title = tab.browser.locationTitle
-                    self.updatePaneAppearance()
-                    self.updateTabs()
-                }
+        if tab.id != currentTab?.id {
+            activateTab(tab, updateInterface: false)
+            DispatchQueue.main.async { [weak self, weak tab] in
+                guard let self, let tab, self.visibleTabs.contains(where: { $0 === tab }) else { return }
+                self.view.window?.title = self.currentTab?.browser.locationTitle ?? "Mac Explorer"
+                self.updatePaneAppearance()
+                self.updateTabs()
             }
-            if tab.browser.handleNavigationMouseDown(event) { return nil }
-            return event
         }
+        return tab.browser.handleNavigationMouseDown(event)
     }
 
     private func updateTabs() {

@@ -328,14 +328,15 @@ final class MainViewController: NSViewController,
     }
 
     func handleNavigationMouseDown(_ event: NSEvent) -> Bool {
-        guard event.type == .leftMouseDown, event.window === view.window else { return false }
-        for button in [backButton, forwardButton, upButton, refreshButton] where !button.isHidden {
+        guard event.type == .leftMouseDown, event.window === view.window,
+              !view.isHiddenOrHasHiddenAncestor else { return false }
+        for button in [backButton, forwardButton, upButton, refreshButton] where !button.isHiddenOrHasHiddenAncestor {
             if button.bounds.contains(button.convert(event.locationInWindow, from: nil)) {
-                NavigationClickDispatcher.enqueue(button)
+                NavigationClickDispatcher.mouseDown(on: button, with: event)
                 return true
             }
         }
-        return breadcrumbBar.handleMouseDown(atWindowPoint: event.locationInWindow)
+        return breadcrumbBar.handleMouseDown(event)
     }
 
     private var otherBrowser: MainViewController? {
@@ -997,6 +998,9 @@ final class MainViewController: NSViewController,
            restoredQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let token = DirectoryMetadataLoadToken()
             navigationLoadToken = token
+            let requestID = UUID().uuidString
+            let started = ProcessInfo.processInfo.systemUptime
+            NavigationDiagnostics.logger.notice("Navigation started: request=\(requestID, privacy: .public)")
             let showHidden = showHiddenFiles
             let service = fileSystem
             breadcrumbBar.endEditing()
@@ -1008,6 +1012,8 @@ final class MainViewController: NSViewController,
                     try service.contents(of: directory, showHidden: showHidden,
                         shouldContinue: { !token.isCancelled })
                 }
+                let enumerationMilliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1_000
+                NavigationDiagnostics.logger.notice("Navigation enumerated: request=\(requestID, privacy: .public) ms=\(enumerationMilliseconds) cancelled=\(token.isCancelled)")
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.navigationLoadToken === token,
                           !token.isCancelled else { return }
@@ -1023,11 +1029,16 @@ final class MainViewController: NSViewController,
                     }
                     switch result {
                     case .success(let items):
+                        let presentationStarted = ProcessInfo.processInfo.systemUptime
                         self.setLocation(location, addToHistory: addToHistory,
                             selectURL: selectURL, restoredQuery: restoredQuery,
                             restoredSelection: restoredSelection,
                             restoredHistoryIndex: restoredHistoryIndex, preparedItems: items)
+                        let presentationMilliseconds = (ProcessInfo.processInfo.systemUptime - presentationStarted) * 1_000
+                        let elapsedMilliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1_000
+                        NavigationDiagnostics.logger.notice("Navigation displayed: request=\(requestID, privacy: .public) items=\(items.count) totalMS=\(elapsedMilliseconds) presentationMS=\(presentationMilliseconds)")
                     case .failure(let error):
+                        NavigationDiagnostics.logger.error("Navigation failed: request=\(requestID, privacy: .public) code=\((error as NSError).code)")
                         self.sidebarController.select(location: self.currentLocation)
                         self.present(error: error)
                     }

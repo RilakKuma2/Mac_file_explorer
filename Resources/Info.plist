@@ -60,9 +60,9 @@
         </dict>
     </array>
     <key>CFBundleShortVersionString</key>
-	<string>0.1</string>
+    <string>0.1.1</string>
     <key>CFBundleVersion</key>
-    <string>8</string>
+    <string>10</string>
     <key>SUFeedURL</key>
     <string>https://github.com/RilakKuma2/Mac_file_explorer/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
