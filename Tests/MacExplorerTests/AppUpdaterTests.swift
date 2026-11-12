@@ -14,6 +14,10 @@ struct AppUpdaterTests {
         let key = try #require(plist["SUPublicEDKey"] as? String)
         #expect(plist["CFBundleIdentifier"] as? String == "app.macexplorer.filemanager")
         #expect(Data(base64Encoded: key)?.count == 32)
+        // generate_appcast signs the feed only when the app asks for a signed
+        // feed, and 0.1.1 refuses an unsigned one.
+        #expect(plist["SURequireSignedFeed"] as? Bool == true)
+        #expect(plist["SUVerifyUpdateBeforeExtraction"] as? Bool == true)
         #expect(AppVersion(try #require(plist["CFBundleShortVersionString"] as? String)) != nil)
     }
 

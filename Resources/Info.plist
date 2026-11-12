@@ -67,6 +67,10 @@
     <string>https://github.com/RilakKuma2/Mac_file_explorer/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>/MKOb7lEm+Io++e+1WSSYuz0Fp9c1APGoKih+5/zvLM=</string>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

@@ -25,7 +25,7 @@
 ## 기존(Sparkle) 채널 유지
 
 - `prepare-release.sh`는 Sparkle 명령줄 도구로 ZIP에 서명하고 `appcast.xml`을 만듭니다. 앱에는 더 이상 Sparkle이 들어가지 않으며, 도구는 필요할 때 `.build/sparkle-tools`로 내려받습니다(`SPARKLE_TOOLS`로 위치 지정 가능).
-- 업데이트용 Ed25519 개인 키는 macOS 키체인의 `app.macexplorer.filemanager` 계정에 있습니다. 공개 키(`SUPublicEDKey`)와 `SUFeedURL`은 기존 설치본과의 호환을 위해 `Info.plist`에 남겨 둡니다.
+- 업데이트용 Ed25519 개인 키는 macOS 키체인의 `app.macexplorer.filemanager` 계정에 있습니다. 공개 키(`SUPublicEDKey`)와 `SUFeedURL`은 기존 설치본과의 호환을 위해 `Info.plist`에 남겨 둡니다. `SURequireSignedFeed`도 지우면 안 됩니다. 이 키가 있어야 `generate_appcast`가 피드에 서명하고, 0.1.1은 서명 없는 피드를 거부합니다. 스크립트 실행 후 `appcast.xml` 끝에 `sparkle-signatures` 블록이 있는지 확인하세요.
 - 서명된 XML이나 ZIP은 생성 후 편집하지 마세요. 키를 Git, 릴리즈 첨부 파일, 로그에 올리지 마세요.
 - 0.1.1 이하 사용자가 충분히 줄어들면 `appcast.xml`·ZIP 생성과 `Info.plist`의 `SU*` 키를 제거할 수 있습니다. 단, 마지막으로 올린 `appcast.xml`은 `releases/latest/download/appcast.xml` 주소로 계속 받을 수 있어야 하므로, 제거 후에도 최신 릴리즈에 마지막 appcast를 첨부해 두는 편이 안전합니다.
 

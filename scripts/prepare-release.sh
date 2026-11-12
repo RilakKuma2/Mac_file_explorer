@@ -50,6 +50,11 @@ ditto -c -k --sequesterRsrc --keepParent "dist/Mac Explorer.app" "${RELEASE_DIR}
     --link "https://github.com/RilakKuma2/Mac_file_explorer/releases/tag/v${VERSION}" \
     --maximum-deltas 0 "${RELEASE_DIR}"
 
+grep -q "sparkle-signatures" "${RELEASE_DIR}/appcast.xml" || {
+    print -u2 "appcast.xml is not signed; installs of 0.1.1 and earlier would reject it. Keep SURequireSignedFeed in Info.plist."
+    exit 1
+}
+
 STAGING_DIR=$(mktemp -d "${PROJECT_DIR}/dist/dmg-stage.XXXXXX")
 ditto "dist/Mac Explorer.app" "${STAGING_DIR}/Mac Explorer.app"
 ln -s /Applications "${STAGING_DIR}/Applications"
