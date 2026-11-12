@@ -1001,6 +1001,7 @@ final class MainViewController: NSViewController,
             let requestID = UUID().uuidString
             let started = ProcessInfo.processInfo.systemUptime
             NavigationDiagnostics.logger.notice("Navigation started: request=\(requestID, privacy: .public)")
+            InputDiagnostics.log("navigation started")
             let showHidden = showHiddenFiles
             let service = fileSystem
             breadcrumbBar.endEditing()
@@ -1037,6 +1038,7 @@ final class MainViewController: NSViewController,
                         let presentationMilliseconds = (ProcessInfo.processInfo.systemUptime - presentationStarted) * 1_000
                         let elapsedMilliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1_000
                         NavigationDiagnostics.logger.notice("Navigation displayed: request=\(requestID, privacy: .public) items=\(items.count) totalMS=\(elapsedMilliseconds) presentationMS=\(presentationMilliseconds)")
+                        InputDiagnostics.log("navigation displayed items=\(items.count) totalMS=\(Int(elapsedMilliseconds)) presentationMS=\(Int(presentationMilliseconds))")
                     case .failure(let error):
                         NavigationDiagnostics.logger.error("Navigation failed: request=\(requestID, privacy: .public) code=\((error as NSError).code)")
                         self.sidebarController.select(location: self.currentLocation)
@@ -1135,9 +1137,7 @@ final class MainViewController: NSViewController,
             beginRecursiveSearch(activeQuery)
             return
         }
-        let preserved = requestedSelection.isEmpty && preservingSelection
-            ? Set(fileListController.selectedItems.map(\.url))
-            : []
+        let refreshesCurrentListing = requestedSelection.isEmpty && preservingSelection
         let showHidden = showHiddenFiles
         directoryLoadGeneration += 1
         let generation = directoryLoadGeneration
@@ -1175,8 +1175,25 @@ final class MainViewController: NSViewController,
                       self.currentLocation.folderURL?.standardizedFileURL == directory else { return }
                 self.directoryLoadInProgressPath = nil
                 switch result {
-                case .success(let items):
-                    self.fileListController.display(items: items, in: directory, preservingSelection: preserved)
+                case .success(var items):
+                    if refreshesCurrentListing {
+                        items = self.fileListController.carryingOverTagMetadata(items, in: directory)
+                        if self.fileListController.isDisplaying(items, in: directory) {
+                            // Nothing visible changed (attribute-only or already
+                            // reflected event). Do not rebuild the rows under the
+                            // pointer; only re-hydrate tags for this generation.
+                            InputDiagnostics.log("refresh skipped: listing unchanged items=\(items.count)")
+                            self.fileListController.requestMetadataPrefetch()
+                        } else {
+                            // Read the selection now, not when enumeration began:
+                            // a click made while the folder was being re-read
+                            // must not be reverted to the older selection.
+                            let selection = Set(self.fileListController.selectedItems.map(\.url))
+                            self.fileListController.display(items: items, in: directory, preservingSelection: selection)
+                        }
+                    } else {
+                        self.fileListController.display(items: items, in: directory)
+                    }
                     if !requestedSelection.isEmpty {
                         self.fileListController.select(urls: requestedSelection)
                         if let pending = self.pendingDirectorySelection,
@@ -1299,6 +1316,7 @@ final class MainViewController: NSViewController,
             }
             return
         }
+        InputDiagnostics.log("watcher change inProgress=\(directoryLoadInProgressPath == path)")
         if directoryLoadInProgressPath == path {
             pendingDirectoryReload = true
             return
@@ -3577,12 +3595,13 @@ final class MainViewController: NSViewController,
             clearCurrentItems: true
         )
         updateControls()
+        let showHidden = showHiddenFiles
         let workItem = DispatchWorkItem { [weak self, searchToken] in
             guard let self, !searchToken.isCancelled else { return }
             let results = self.fileSystem.search(
                 in: rootURL,
                 query: query,
-                showHidden: self.showHiddenFiles,
+                showHidden: showHidden,
                 shouldContinue: { !searchToken.isCancelled }
             )
             DispatchQueue.main.async { [weak self] in

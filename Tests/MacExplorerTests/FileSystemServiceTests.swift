@@ -181,6 +181,25 @@ struct FileSystemServiceTests {
         }
     }
 
+    @Test("Search terms match names below the root, not the root's own location")
+    func recursiveSearchIgnoresRootLocation() throws {
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("archive-root", isDirectory: true)
+            let nested = root.appendingPathComponent("archive-2024", isDirectory: true)
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try Data().write(to: root.appendingPathComponent("notes.txt"))
+            try Data().write(to: nested.appendingPathComponent("photo.jpg"))
+            try Data().write(to: nested.appendingPathComponent("photo.png"))
+
+            // "archive" is in the root's own name; only the nested folder and
+            // what it contains mention it below the root.
+            let names = Set(service.search(in: root, query: "archive", showHidden: false).map(\.url.lastPathComponent))
+            #expect(names == ["archive-2024", "photo.jpg", "photo.png"])
+            let byExtension = service.search(in: root, query: "ext:jpg", showHidden: false)
+            #expect(byExtension.map(\.url.lastPathComponent) == ["photo.jpg"])
+        }
+    }
+
     @Test("Recursive search stops promptly when cancelled")
     func recursiveSearchCancellation() throws {
         try withTemporaryDirectory { directory in

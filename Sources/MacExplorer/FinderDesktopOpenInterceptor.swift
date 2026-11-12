@@ -175,8 +175,23 @@ final class FinderDesktopOpenInterceptor {
         }
 
         guard type == .leftMouseDown,
-              event.getIntegerValueField(.mouseEventClickState) == 2,
-              let folderURL = finderDesktopFolder(at: event.location) else {
+              event.getIntegerValueField(.mouseEventClickState) == 2 else {
+            return Unmanaged.passUnretained(event)
+        }
+        // This tap holds every double-click on the system until it returns, and
+        // it runs on the main thread. Rule out everything that is not Finder's
+        // Desktop with a local window-list lookup first: the Accessibility hit
+        // test below is synchronous IPC to whichever app is under the pointer
+        // (including this one) and can take seconds if that app is busy.
+        let started = InputDiagnostics.now
+        guard let finderPID = NSRunningApplication
+                .runningApplications(withBundleIdentifier: "com.apple.finder").first?.processIdentifier,
+              isFinderDesktopSurface(at: event.location, finderPID: finderPID) else {
+            InputDiagnostics.log("tap double-click passed through ms=\(InputDiagnostics.milliseconds(since: started))")
+            return Unmanaged.passUnretained(event)
+        }
+        guard let folderURL = finderDesktopFolder(at: event.location) else {
+            InputDiagnostics.log("tap desktop double-click not a folder ms=\(InputDiagnostics.milliseconds(since: started))")
             return Unmanaged.passUnretained(event)
         }
 

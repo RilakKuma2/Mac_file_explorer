@@ -13,8 +13,21 @@ BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist
     exit 1
 }
 
-swift package resolve
-TOOLS="${PROJECT_DIR}/.build/artifacts/sparkle/Sparkle/bin"
+# The app itself updates from GitHub Releases. Sparkle's command-line tools
+# are still needed to sign the legacy appcast that installs of 0.1.1 and
+# earlier read; they are fetched once and are not part of the app.
+SPARKLE_VERSION="2.10.0"
+TOOLS="${SPARKLE_TOOLS:-${PROJECT_DIR}/.build/sparkle-tools/bin}"
+if [[ ! -x "${TOOLS}/generate_appcast" && -x "${PROJECT_DIR}/.build/artifacts/sparkle/Sparkle/bin/generate_appcast" ]]; then
+    TOOLS="${PROJECT_DIR}/.build/artifacts/sparkle/Sparkle/bin"
+fi
+if [[ ! -x "${TOOLS}/generate_appcast" ]]; then
+    TOOLS="${PROJECT_DIR}/.build/sparkle-tools/bin"
+    mkdir -p "${TOOLS:h}"
+    curl --fail --location --silent --show-error \
+        "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
+        | tar -xJ -C "${TOOLS:h}" bin
+fi
 PUBLIC_KEY=$("${TOOLS}/generate_keys" --account app.macexplorer.filemanager -p)
 EXPECTED_KEY=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Resources/Info.plist)
 [[ "${PUBLIC_KEY}" == "${EXPECTED_KEY}" ]] || {

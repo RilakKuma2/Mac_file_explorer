@@ -176,11 +176,19 @@ final class FileSystemService {
             errorHandler: { _, _ in shouldContinue() }
         ) else { return [] }
 
+        // Match folder names below the search root only. Matching the absolute
+        // path made a term that appears in the root's own location (a user or
+        // volume name, say) return every file underneath it.
         var results: [FileItem] = []
         for case let url as URL in enumerator {
             if results.count >= limit || !shouldContinue() { break }
+            // Rule out by extension before paying for the item's metadata.
+            guard parsedQuery.mayMatch(url) else { continue }
             guard let item = item(for: url, resourceKeys: searchResourceKeys) else { continue }
-            if parsedQuery.matches(item) {
+            // The enumerator can report a differently spelled root (/private/var
+            // for /var), so derive the relative part from its depth instead.
+            let relativePath = url.pathComponents.suffix(max(1, enumerator.level)).joined(separator: "/")
+            if parsedQuery.matches(item, relativePath: relativePath) {
                 results.append(item)
             }
         }
@@ -501,8 +509,12 @@ private struct FileSearchQuery {
         self.modifiedAfter = modifiedAfter
     }
 
-    func matches(_ item: FileItem) -> Bool {
-        let searchable = item.name + " " + item.kind + " " + item.url.path
+    func mayMatch(_ url: URL) -> Bool {
+        extensions.isEmpty || extensions.contains(url.pathExtension.lowercased())
+    }
+
+    func matches(_ item: FileItem, relativePath: String) -> Bool {
+        let searchable = item.name + " " + item.kind + " " + relativePath
         guard terms.allSatisfy({ searchable.localizedCaseInsensitiveContains($0) }) else { return false }
         if !extensions.isEmpty, !extensions.contains(item.url.pathExtension.lowercased()) { return false }
         if let kind, !matches(kind: kind, item: item) { return false }

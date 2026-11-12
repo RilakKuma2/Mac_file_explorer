@@ -1,5 +1,4 @@
 import AppKit
-import Sparkle
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private static let fullDiskAccessPromptSuppressedKey = "FullDiskAccessPromptSuppressed"
@@ -62,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        InputDiagnostics.start()
         FolderAccessManager.shared.restoreAccess()
         let mainMenu = makeMainMenu()
         ShortcutRegistry.shared.resetDefinitions()
@@ -602,8 +602,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let aboutItem = appMenu.addItem(withTitle: L10n.text("About Mac Explorer"), action: #selector(showAbout(_:)), keyEquivalent: "")
         aboutItem.target = self
         let updateItem = appMenu.addItem(withTitle: L10n.text("Check for Updates") + "…",
-            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
-        updateItem.target = appUpdater.controller
+            action: #selector(AppUpdater.checkForUpdates(_:)), keyEquivalent: "")
+        updateItem.target = appUpdater
         let automaticUpdatesItem = appMenu.addItem(withTitle: L10n.text("Automatically Check for Updates"),
             action: #selector(AppUpdater.toggleAutomaticChecks(_:)), keyEquivalent: "")
         automaticUpdatesItem.target = appUpdater

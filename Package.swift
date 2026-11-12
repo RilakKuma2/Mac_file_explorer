@@ -10,15 +10,10 @@ let package = Package(
     products: [
         .executable(name: "MacExplorer", targets: ["MacExplorer"])
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
-    ],
     targets: [
         .executableTarget(
             name: "MacExplorer",
-            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AVFoundation"),
@@ -28,6 +23,7 @@ let package = Package(
                 .linkedFramework("ImageIO"),
                 .linkedFramework("QuickLookThumbnailing"),
                 .linkedFramework("QuickLookUI"),
+                .linkedFramework("Security"),
                 .linkedFramework("Vision")
             ]
         ),

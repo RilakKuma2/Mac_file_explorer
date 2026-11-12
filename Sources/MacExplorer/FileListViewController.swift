@@ -193,6 +193,8 @@ final class FileCollectionView: NSCollectionView {
         }
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) {
             onCommandScroll?(event.scrollingDeltaY, event.hasPreciseScrollingDeltas)
@@ -1411,6 +1413,7 @@ final class FileListViewController: NSViewController,
         baseEmptyDetail = emptyDetail
         contentState = .content
         let changedDirectory = directoryURL.standardizedFileURL != directory.standardizedFileURL
+        InputDiagnostics.log("list display items=\(items.count) changedDirectory=\(changedDirectory) preserving=\(urls.count)")
         if changedDirectory {
             cancelVisibleThumbnailRequests()
             cancelFolderSizeOperations(clearCache: true)
@@ -1445,6 +1448,36 @@ final class FileListViewController: NSViewController,
         }
         clampScrollPosition()
         scheduleVisibleFolderSizesAfterLayout()
+        scheduleMetadataPrefetchAfterLayout()
+    }
+
+    /// A refresh re-enumerates the folder without Finder tags (they are hydrated
+    /// lazily). Keep the tags already shown instead of blanking them until the
+    /// next hydration pass.
+    func carryingOverTagMetadata(_ items: [FileItem], in directory: URL) -> [FileItem] {
+        guard directoryURL.standardizedFileURL == directory.standardizedFileURL,
+              !allItems.isEmpty else { return items }
+        return items.map { item in
+            guard let index = allItemIndexByPath[item.pathKey], allItems.indices.contains(index) else { return item }
+            let current = allItems[index]
+            guard !current.tagNames.isEmpty || current.labelNumber != 0 else { return item }
+            return item.replacingTagMetadata(tagNames: current.tagNames, labelNumber: current.labelNumber)
+        }
+    }
+
+    /// True when a refresh produced exactly the listing already on screen, so
+    /// rebuilding every row (and interrupting clicks, hover, thumbnails and
+    /// scrolling) would change nothing.
+    func isDisplaying(_ items: [FileItem], in directory: URL) -> Bool {
+        guard directoryURL.standardizedFileURL == directory.standardizedFileURL,
+              pendingRenameRefresh == nil else { return false }
+        switch contentState {
+        case .content, .empty: return allItems == items
+        case .loading, .failed: return false
+        }
+    }
+
+    func requestMetadataPrefetch() {
         scheduleMetadataPrefetchAfterLayout()
     }
 
@@ -1529,9 +1562,19 @@ final class FileListViewController: NSViewController,
         guard directoryURL.standardizedFileURL == directory.standardizedFileURL else { return }
         guard !items.isEmpty else { return }
         var changedRows = IndexSet()
+        var changedAny = false
 
         for item in items {
-            let path = item.url.standardizedFileURL.path
+            let path = item.pathKey
+            // Most files carry no tags. Rebuilding their cells anyway restarted
+            // every visible thumbnail and replaced the views under the pointer
+            // several times after each navigation.
+            if let index = allItemIndexByPath[path], allItems.indices.contains(index),
+               allItems[index].tagNames == item.tagNames,
+               allItems[index].labelNumber == item.labelNumber {
+                continue
+            }
+            changedAny = true
             if let index = allItemIndexByPath[path], allItems.indices.contains(index) {
                 allItems[index] = allItems[index].replacingTagMetadata(
                     tagNames: item.tagNames,
@@ -1564,6 +1607,8 @@ final class FileListViewController: NSViewController,
             }
         }
 
+        guard changedAny else { return }
+        InputDiagnostics.log("list tag metadata changed rows=\(changedRows.count)")
         switch viewMode {
         case .details:
             let nameColumn = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
@@ -2565,12 +2610,15 @@ final class FileListViewController: NSViewController,
     }
 
     private func rebuildPathIndexes() {
-        allItemIndexByPath = Dictionary(uniqueKeysWithValues: allItems.indices.map {
+        // Search and tag results can name one item twice once paths are
+        // standardized (for example /private/tmp and /tmp); a duplicate key
+        // must not trap.
+        allItemIndexByPath = Dictionary(allItems.indices.map {
             (allItems[$0].pathKey, $0)
-        })
-        visibleItemIndexByPath = Dictionary(uniqueKeysWithValues: visibleItems.indices.map {
+        }, uniquingKeysWith: { first, _ in first })
+        visibleItemIndexByPath = Dictionary(visibleItems.indices.map {
             (visibleItems[$0].pathKey, $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         var tableRowsByPath: [String: Int] = [:]
         var orderedTableItems: [FileItem] = []
         orderedTableItems.reserveCapacity(visibleItems.count)
@@ -2581,9 +2629,9 @@ final class FileListViewController: NSViewController,
         }
         tableRowByPath = tableRowsByPath
         tableOrderedItems = orderedTableItems
-        tableOrderIndexByPath = Dictionary(uniqueKeysWithValues: orderedTableItems.indices.map {
+        tableOrderIndexByPath = Dictionary(orderedTableItems.indices.map {
             (orderedTableItems[$0].pathKey, $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         var collectionIndexes: [String: IndexPath] = [:]
         collectionIndexes.reserveCapacity(visibleItems.count)
         var orderedItems: [FileItem] = []
@@ -2601,9 +2649,9 @@ final class FileListViewController: NSViewController,
         }
         collectionIndexPathByPath = collectionIndexes
         displayOrderedItems = orderedItems
-        displayOrderIndexByPath = Dictionary(uniqueKeysWithValues: orderedItems.indices.map {
+        displayOrderIndexByPath = Dictionary(orderedItems.indices.map {
             (orderedItems[$0].pathKey, $0)
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 
     private func toggleDateGroup(_ bucket: DateGroupBucket) {

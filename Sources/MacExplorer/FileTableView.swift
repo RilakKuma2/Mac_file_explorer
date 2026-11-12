@@ -61,6 +61,10 @@ final class FileTableView: NSTableView {
         return rect(ofColumn: sizeColumn).maxX
     }
 
+    // Like Finder: the click that brings an inactive window forward also
+    // selects the item under it instead of being discarded.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) {
             onCommandScroll?(event.scrollingDeltaY, event.hasPreciseScrollingDeltas)
@@ -86,12 +90,14 @@ final class FileTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         let clicked = row(at: point)
         if clicked >= 0, onNonItemClick?(clicked) == true {
+            InputDiagnostics.log("  table group-row click row=\(clicked)")
             return
         }
         let clickedColumn = column(at: point)
         let isSpacer = clickedColumn < 0
             || tableColumns[clickedColumn].identifier == Self.spacerColumnIdentifier
         if clicked < 0 || isSpacer {
+            InputDiagnostics.log("  table marquee row=\(clicked) column=\(clickedColumn)")
             performLiveMarqueeSelection(startingAt: point, event: event)
             return
         }
@@ -101,7 +107,9 @@ final class FileTableView: NSTableView {
             return
         }
         collapseMultipleSelectionForPlainClick(at: clicked, modifiers: event.modifierFlags)
+        let started = InputDiagnostics.now
         super.mouseDown(with: event)
+        InputDiagnostics.log("  table click row=\(clicked) of \(numberOfRows) selectedAfter=\(Array(selectedRowIndexes.prefix(4))) ms=\(InputDiagnostics.milliseconds(since: started))")
         if clicked >= 0, !event.modifierFlags.contains(.shift) {
             onSelectionAnchorChanged?(clicked)
         } else if clicked < 0, !event.modifierFlags.contains(.shift) {

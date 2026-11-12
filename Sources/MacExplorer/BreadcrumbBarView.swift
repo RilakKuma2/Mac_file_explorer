@@ -68,6 +68,9 @@ private class BreadcrumbComponentButton: NSButton {
     private var hoverTrackingArea: NSTrackingArea?
     private var isHovered = false
     var isDropTarget = false { didSet { updateHighlight() } }
+    /// The folder this control acts on. Captured per button so an action that
+    /// fires after the bar was rebuilt cannot index into the newer path.
+    var directoryURL: URL?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -366,7 +369,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
                 return true
             }
         }
-        if let window, !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+        if let window { NavigationClickDispatcher.activateForDirectClick(in: window) }
         beginEditing()
         return true
     }
@@ -378,6 +381,10 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
     }
 
     func show(url: URL) {
+        // Every folder refresh reports the location again. Rebuilding identical
+        // buttons there discarded the one under the pointer (losing a click in
+        // progress), closed an open subfolder menu and ended address editing.
+        if representedPath == url.path, !stack.arrangedSubviews.isEmpty { return }
         representedPath = url.path
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
         let normalized = url.standardizedFileURL
@@ -474,6 +481,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         chevronDirectoryURLs = []
         editField.isHidden = true
         stack.isHidden = false
+        InputDiagnostics.log("breadcrumb rebuild components=\(componentURLs.count)")
         stack.arrangedSubviews.forEach {
             stack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -493,6 +501,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         }
 
         let homeURL = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        let desktopURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.standardizedFileURL
         for (index, url) in componentURLs.enumerated() {
             let directoryToLeft = index == 0
                 ? (url.path == "/" ? URL(fileURLWithPath: "/", isDirectory: true) : homeURL)
@@ -501,13 +510,14 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
             let name: String
             if url.path == "/" {
                 name = L10n.text("This Mac")
-            } else if let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first,
-                      url.standardizedFileURL == desktop.standardizedFileURL {
+            } else if url.standardizedFileURL == desktopURL {
                 name = L10n.text("Desktop")
             } else {
                 name = FileManager.default.displayName(atPath: url.path)
             }
-            stack.addArrangedSubview(crumbButton(title: name, symbol: nil, tag: index))
+            let crumb = crumbButton(title: name, symbol: nil, tag: index)
+            (crumb as? BreadcrumbComponentButton)?.directoryURL = url
+            stack.addArrangedSubview(crumb)
         }
         stack.addArrangedSubview(addressEditTarget())
         window?.invalidateCursorRects(for: self)
@@ -548,6 +558,7 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         button.target = self
         button.action = #selector(showChildDirectories(_:))
         button.tag = chevronDirectoryURLs.count
+        button.directoryURL = directoryURL.standardizedFileURL
         chevronDirectoryURLs.append(directoryURL.standardizedFileURL)
         button.widthAnchor.constraint(equalToConstant: 17).isActive = true
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -596,14 +607,16 @@ final class BreadcrumbBarView: NSView, NSTextFieldDelegate, NSMenuDelegate {
         endEditing()
         if sender.tag == -1 {
             delegate?.breadcrumbBarDidRequestHome(self)
-        } else if sender.tag >= 0, componentURLs.indices.contains(sender.tag) {
-            delegate?.breadcrumbBar(self, didSelect: componentURLs[sender.tag])
+        } else if sender.tag >= 0,
+                  let url = (sender as? BreadcrumbComponentButton)?.directoryURL {
+            delegate?.breadcrumbBar(self, didSelect: url)
         }
     }
 
     @objc private func showChildDirectories(_ sender: NSButton) {
-        guard chevronDirectoryURLs.indices.contains(sender.tag) else { return }
-        let directoryURL = chevronDirectoryURLs[sender.tag]
+        // A rebuild during this button's own mouse tracking detaches it.
+        guard sender.window != nil,
+              let directoryURL = (sender as? BreadcrumbComponentButton)?.directoryURL else { return }
         let menu = makeChildDirectoryMenu(for: directoryURL)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 3), in: sender)
         if activeChildDirectoryMenu === menu {

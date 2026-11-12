@@ -54,8 +54,16 @@ final class ExplorerWindow: NSWindow {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        let traced = InputDiagnostics.isEnabled
+            && [.leftMouseDown, .leftMouseUp, .rightMouseDown].contains(event.type)
+        let started = InputDiagnostics.now
+        if traced {
+            let point = contentView?.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            InputDiagnostics.log("event \(event.type.rawValue) clicks=\(event.clickCount) key=\(isKeyWindow) active=\(NSApp.isActive) hit=\(InputDiagnostics.describe(contentView?.superview?.hitTest(point))) responder=\(firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
+        }
         if attachedSheet == nil,
            (contentViewController as? ExplorerWindowViewController)?.handlePaneMouseDown(event) == true {
+            if traced { InputDiagnostics.log("  routed=navigation ms=\(InputDiagnostics.milliseconds(since: started))") }
             return
         }
         if event.type == .leftMouseDown,
@@ -66,11 +74,13 @@ final class ExplorerWindow: NSWindow {
             let edges = resizeEdges(at: event.locationInWindow)
             if !edges.isEmpty, !isInteractiveControl(at: event.locationInWindow) {
                 trackResize(from: event, edges: edges)
+                if traced { InputDiagnostics.log("  routed=resize ms=\(InputDiagnostics.milliseconds(since: started))") }
                 return
             }
         }
 
         super.sendEvent(event)
+        if traced { InputDiagnostics.log("  routed=appkit ms=\(InputDiagnostics.milliseconds(since: started))") }
 
         if event.type == .mouseMoved || event.type == .mouseEntered || event.type == .cursorUpdate {
             let edges = resizeEdges(at: event.locationInWindow)
